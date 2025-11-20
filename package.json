@@ -1,0 +1,36 @@
+{
+  "name": "RefFlow",
+  "version": "1.0.2",
+  "description": "A focused, offline-first local reference trainer for artists.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "author": "yuebai",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.yourname.reftrainer",
+    "productName": "RefFlow",
+    "files": [
+      "index.html",
+      "main.js",
+      "libs/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico" 
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "RefFlow"
+    }
+  }
+}

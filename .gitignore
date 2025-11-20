@@ -1,0 +1,12 @@
+node_modules/
+
+# 打包输出文件夹 (exe 文件不放在代码库里)
+dist/
+release/
+
+# 系统生成文件
+.DS_Store
+Thumbs.db
+
+# 环境变量 (如果有)
+.env

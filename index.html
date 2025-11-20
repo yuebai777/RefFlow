@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RefFlow</title>
+    
+    <script src="./libs/tailwindcss.js"></script>
+    
+    <script src="./libs/react.js"></script>
+    <script src="./libs/react-dom.js"></script>
+    
+    <script src="./libs/babel.js"></script>
+
+    <style>
+        body { margin: 0; background-color: #09090b; overflow: hidden; color: white; user-select: none; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+        /* 隐藏滚动条 */
+        ::-webkit-scrollbar { display: none; }
+        
+        /* 自定义动画 */
+        .animate-spin-slow { animation: spin 3s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        
+        @keyframes pop-scale {
+            0% { transform: scale(1); }
+            40% { transform: scale(1.5); color: #fff; text-shadow: 0 0 20px rgba(255,255,255,0.8); }
+            100% { transform: scale(1); }
+        }
+        .animate-pop { animation: pop-scale 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); transform-origin: center; }
+        
+        .animate-pulse { animation: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .8; transform: scale(1.05); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+        // -----------------------------------------------------------------------------
+        // 图标组件 (Lucide React Icons)
+        // -----------------------------------------------------------------------------
+        const IconBase = ({ children, size = 24, className = "" }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{children}</svg>
+        );
+
+        const Play = (p) => <IconBase {...p}><polygon points="5 3 19 12 5 21 5 3"></polygon></IconBase>;
+        const Pause = (p) => <IconBase {...p}><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></IconBase>;
+        const FolderOpen = (p) => <IconBase {...p}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></IconBase>;
+        const Clock = (p) => <IconBase {...p}><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></IconBase>;
+        const ImageIcon = (p) => <IconBase {...p}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></IconBase>;
+        const SkipForward = (p) => <IconBase {...p}><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></IconBase>;
+        const SkipBack = (p) => <IconBase {...p}><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></IconBase>;
+        const X = (p) => <IconBase {...p}><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></IconBase>;
+        const Trash2 = (p) => <IconBase {...p}><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></IconBase>;
+        const Layers = (p) => <IconBase {...p}><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></IconBase>;
+        const Monitor = (p) => <IconBase {...p}><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></IconBase>;
+        const Edit2 = (p) => <IconBase {...p}><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></IconBase>;
+        const Plus = (p) => <IconBase {...p}><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></IconBase>;
+        const Save = (p) => <IconBase {...p}><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></IconBase>;
+        const Folder = (p) => <IconBase {...p}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></IconBase>;
+        const Bell = (p) => <IconBase {...p}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></IconBase>;
+        const BellOff = (p) => <IconBase {...p}><path d="M13.73 21a2 2 0 0 1-3.46 0"></path><path d="M18.63 13A17.89 17.89 0 0 1 18 8"></path><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"></path><path d="M18 8a6 6 0 0 0-9.33-5"></path><line x1="1" y1="1" x2="23" y2="23"></line></IconBase>;
+        const ArrowRight = (p) => <IconBase {...p}><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></IconBase>;
+        const Timer = (p) => <IconBase {...p}><line x1="10" y1="2" x2="14" y2="2"></line><line x1="12" y1="14" x2="15" y2="11"></line><circle cx="12" cy="14" r="8"></circle></IconBase>;
+        const FileImage = (p) => <IconBase {...p}><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><circle cx="10" cy="13" r="2"></circle><path d="m20 17-1.09-2.18a.5.5 0 0 0-.91 0l-1.55 3.1H8"></path></IconBase>;
+        const List = (p) => <IconBase {...p}><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></IconBase>;
+        const Shuffle = (p) => <IconBase {...p}><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></IconBase>;
+        const ListOrdered = (p) => <IconBase {...p}><line x1="10" y1="6" x2="21" y2="6"></line><line x1="10" y1="12" x2="21" y2="12"></line><line x1="10" y1="18" x2="21" y2="18"></line><path d="M4 6h1v4"></path><path d="M4 10h2"></path><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"></path></IconBase>;
+        const Eye = (p) => <IconBase {...p}><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle></IconBase>;
+        const GripHorizontal = (p) => <IconBase {...p}><circle cx="19" cy="9" r="1"></circle><circle cx="12" cy="9" r="1"></circle><circle cx="5" cy="9" r="1"></circle><circle cx="19" cy="15" r="1"></circle><circle cx="12" cy="15" r="1"></circle><circle cx="5" cy="15" r="1"></circle></IconBase>;
+        const LayoutGrid = (p) => <IconBase {...p}><rect width="7" height="7" x="3" y="3" rx="1"></rect><rect width="7" height="7" x="14" y="3" rx="1"></rect><rect width="7" height="7" x="14" y="14" rx="1"></rect><rect width="7" height="7" x="3" y="14" rx="1"></rect></IconBase>;
+        const AlertTriangle = (p) => <IconBase {...p}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></IconBase>;
+        const UploadCloud = (p) => <IconBase {...p}><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path><path d="M12 12v9"></path><path d="m16 16-4-4-4 4"></path></IconBase>;
+        const ChevronDown = (p) => <IconBase {...p}><path d="m6 9 6 6 6-6"></path></IconBase>;
+        const ChevronLeft = (p) => <IconBase {...p}><path d="m15 18-6-6 6-6"></path></IconBase>;
+        const ChevronRight = (p) => <IconBase {...p}><path d="m9 18 6-6-6-6"></path></IconBase>;
+
+        // -----------------------------------------------------------------------------
+        // 缩略图组件 (使用 React.memo 优化渲染，添加 lazy loading)
+        // -----------------------------------------------------------------------------
+        const ThumbnailItem = React.memo(({ file, index, onRemove, onPreview, onDragStart, onDrop, onDragOver }) => {
+            const [url, setUrl] = useState(null);
+            
+            useEffect(() => {
+                let active = true;
+                const timer = setTimeout(() => {
+                    if (active) {
+                        const objectUrl = URL.createObjectURL(file);
+                        setUrl(objectUrl);
+                    }
+                }, 10); 
+
+                return () => {
+                    active = false;
+                    clearTimeout(timer);
+                    if (url) URL.revokeObjectURL(url);
+                };
+            }, [file]);
+
+            return (
+                <div 
+                    draggable
+                    onDragStart={(e) => onDragStart(e, index)}
+                    onDragOver={(e) => onDragOver(e, index)}
+                    onDrop={(e) => onDrop(e, index)}
+                    className="relative group aspect-square bg-zinc-900 rounded-lg border border-zinc-800 overflow-hidden cursor-move hover:border-blue-500/50 transition-colors"
+                >
+                    {url ? (
+                        <img 
+                            src={url} 
+                            alt="thumb" 
+                            loading="lazy" 
+                            decoding="async" 
+                            className="w-full h-full object-cover pointer-events-none select-none" 
+                        />
+                    ) : (
+                        <div className="w-full h-full flex items-center justify-center text-zinc-700">
+                           <div className="animate-pulse bg-zinc-800 w-full h-full"></div>
+                        </div>
+                    )}
+                    
+                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-between p-2">
+                        <div className="flex justify-between items-start">
+                            <div className="bg-black/50 p-1 rounded text-zinc-400 cursor-grab active:cursor-grabbing"><GripHorizontal size={14}/></div>
+                            <button onClick={(e) => { e.stopPropagation(); onRemove(index); }} className="bg-red-900/80 p-1 rounded text-red-200 hover:bg-red-600"><X size={14}/></button>
+                        </div>
+                        <div className="flex justify-center">
+                            <button onClick={(e) => { e.stopPropagation(); onPreview(file); }} className="bg-blue-600/80 px-2 py-1 rounded text-xs text-white flex items-center gap-1 hover:bg-blue-500"><Eye size={12}/> 预览</button>
+                        </div>
+                        <div className="text-[10px] text-zinc-400 truncate text-center px-1 bg-black/40 rounded">{file.name}</div>
+                    </div>
+                </div>
+            );
+        });
+
+        // -----------------------------------------------------------------------------
+        // 主逻辑组件
+        // -----------------------------------------------------------------------------
+        function RefFlowr() {
+            const [globalFiles, setGlobalFiles] = useState([]); 
+            const [globalFolderName, setGlobalFolderName] = useState(null); 
+            const [sessionImages, setSessionImages] = useState([]); 
+            const [appState, setAppState] = useState('setup'); 
+            
+            // Modals state
+            const [showClassEditor, setShowClassEditor] = useState(false);
+            const [showListManager, setShowListManager] = useState(false); 
+            const [managingStageIndex, setManagingStageIndex] = useState(null); 
+            const [previewFile, setPreviewFile] = useState(null); 
+            const [errorInfo, setErrorInfo] = useState(null);
+            
+            // Pagination state
+            const [managerPage, setManagerPage] = useState(1);
+            const ITEMS_PER_PAGE = 60;
+
+            const defaultClassStages = [
+                { duration: 30, count: 5, stageFiles: [], folderName: null },   
+                { duration: 60, count: 5, stageFiles: [], folderName: null },   
+                { duration: 300, count: 2, stageFiles: [], folderName: null },
+            ];
+
+            const [classStages, setClassStages] = useState(defaultClassStages);
+            // 【更新 1】 settings 增加 randomFlip 默认值
+            const [settings, setSettings] = useState({ 
+                duration: 60, 
+                isClassMode: false, 
+                grayscale: false, 
+                flipHorizontal: false, 
+                randomFlip: false, // 新增：随机翻转
+                fitMode: 'contain', 
+                count: 0, 
+                enableStageAlert: true, 
+                autoContinue: true, 
+                breakDuration: 5, 
+                playbackOrder: 'random' 
+            });
+            const [timeUnitMultiplier, setTimeUnitMultiplier] = useState(1);
+            const [currentIndex, setCurrentIndex] = useState(0);
+            const [timeLeft, setTimeLeft] = useState(settings.duration);
+            const [currentImageUrl, setCurrentImageUrl] = useState(null);
+            const [totalTimeElapsed, setTotalTimeElapsed] = useState(0);
+            const [nextStageIndex, setNextStageIndex] = useState(null);
+            const [breakTimer, setBreakTimer] = useState(0);
+            
+            // 【更新 2】 新增状态：当前图片是否被随机翻转
+            const [currentRandomFlip, setCurrentRandomFlip] = useState(false);
+
+            const folderInputRef = useRef(null);
+            const fileInputRef = useRef(null);
+            const timerRef = useRef(null);
+
+            // =====================================================
+            //  核心功能函数
+            // =====================================================
+            const stopSession = () => { setAppState('setup'); setCurrentImageUrl(null); };
+            const togglePause = () => { if (appState === 'stageBreak') return; setAppState(prev => prev === 'playing' ? 'paused' : 'playing'); };
+
+            const shuffleArray = (arr) => { const n = [...arr]; for (let i = n.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [n[i], n[j]] = [n[j], n[i]]; } return n; };
+            const formatTime = (sec) => { const m = Math.floor(sec / 60); const s = sec % 60; return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`; };
+            const filterImageFiles = (list) => Array.from(list).filter(f => f.type.startsWith('image/'));
+            const getFolderName = (files) => { if(!files||files.length===0)return null; const p = files[0].webkitRelativePath; return p ? p.split('/')[0] : "Selected Files"; };
+            
+            const playAlertSound = () => { try { const AudioContext = window.AudioContext || window.webkitAudioContext; if (!AudioContext) return; const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); osc.connect(gain); gain.connect(ctx.destination); osc.type = 'sine'; osc.frequency.setValueAtTime(523.25, ctx.currentTime); osc.frequency.exponentialRampToValueAtTime(1046.5, ctx.currentTime + 0.1); gain.gain.setValueAtTime(0.1, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.8); osc.start(); osc.stop(ctx.currentTime + 0.8); } catch(e){} };
+            const playTickSound = () => { try { const AudioContext = window.AudioContext || window.webkitAudioContext; if (!AudioContext) return; const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); osc.connect(gain); gain.connect(ctx.destination); osc.type = 'sine'; osc.frequency.setValueAtTime(800, ctx.currentTime); gain.gain.setValueAtTime(0.05, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.1); osc.start(); osc.stop(ctx.currentTime + 0.1); } catch(e){} };
+
+            const addFilesToGlobal = (newFiles, sourceName) => { setGlobalFolderName(prev => prev === null ? sourceName : "Mixed Sources"); setGlobalFiles(prev => { const combined = [...prev]; newFiles.forEach(img => { if (!combined.some(f => f.name === img.name && f.size === img.size)) combined.push(img); }); return combined; }); };
+            const handleFolderSelect = (e) => { const files = filterImageFiles(e.target.files); if(files.length===0){alert("未找到图片");return;} addFilesToGlobal(files, getFolderName(e.target.files)); };
+            const handleFileSelect = (e) => { const files = filterImageFiles(e.target.files); if(files.length===0){alert("未选择图片");return;} addFilesToGlobal(files, "Selected Files"); };
+            const onMainDrop = (e) => { e.preventDefault(); const files = e.dataTransfer.items ? Array.from(e.dataTransfer.items).filter(i=>i.kind==='file').map(i=>i.getAsFile()) : Array.from(e.dataTransfer.files); const imgs = filterImageFiles(files); if(imgs.length>0) addFilesToGlobal(imgs, "Dropped Files"); };
+            
+            const handleStageFolderSelect = (e, idx) => { const files = filterImageFiles(e.target.files); if(files.length===0)return; const stages = [...classStages]; const current = [...(stages[idx].stageFiles||[])]; files.forEach(f=>{if(!current.some(ex=>ex.name===f.name && ex.size===f.size)) current.push(f);}); stages[idx].stageFiles = current; stages[idx].folderName = stages[idx].folderName ? "Mixed Sources" : getFolderName(e.target.files); setClassStages(stages); };
+            const handleStageFileSelect = (e, idx) => { const files = filterImageFiles(e.target.files); if(files.length===0)return; const stages = [...classStages]; const current = [...(stages[idx].stageFiles||[])]; files.forEach(f=>{if(!current.some(ex=>ex.name===f.name && ex.size===f.size)) current.push(f);}); stages[idx].stageFiles = current; stages[idx].folderName = stages[idx].folderName ? "Mixed Sources" : "Selected Files"; setClassStages(stages); };
+            
+            const clearGlobalFiles = () => { setGlobalFiles([]); setGlobalFolderName(null); };
+            const removeGlobalFile = (index) => { setGlobalFiles(prev => prev.filter((_, i) => i !== index)); };
+            
+            const onDragStart = (e, index) => { e.dataTransfer.setData("text/plain", index); };
+            const onDragOver = (e) => e.preventDefault();
+            
+            const onDrop = (e, dropLocalIndex, isGlobalManager, stageIdx) => { 
+                e.preventDefault(); 
+                const dragLocalIndex = Number(e.dataTransfer.getData("text/plain"));
+                if(isNaN(dragLocalIndex) || dragLocalIndex === dropLocalIndex) return;
+
+                const offset = (managerPage - 1) * ITEMS_PER_PAGE;
+                const globalDragIndex = offset + dragLocalIndex;
+                const globalDropIndex = offset + dropLocalIndex;
+
+                if (isGlobalManager) {
+                    setGlobalFiles(prev => { 
+                        const n = [...prev]; 
+                        const [rem] = n.splice(globalDragIndex, 1); 
+                        n.splice(globalDropIndex, 0, rem); 
+                        return n; 
+                    }); 
+                } else {
+                     const newStages = [...classStages];
+                     const currentFiles = [...newStages[stageIdx].stageFiles];
+                     const [rem] = currentFiles.splice(dragLocalIndex, 1);
+                     currentFiles.splice(dropLocalIndex, 0, rem);
+                     newStages[stageIdx].stageFiles = currentFiles;
+                     setClassStages(newStages);
+                }
+            };
+
+            const removeStageFile = (stageIdx, fileIdx) => { const newStages = [...classStages]; newStages[stageIdx].stageFiles = newStages[stageIdx].stageFiles.filter((_, i) => i !== fileIdx); setClassStages(newStages); };
+            const sortStageFiles = (stageIdx) => { const newStages = [...classStages]; newStages[stageIdx].stageFiles.sort((a, b) => a.name.localeCompare(b.name)); setClassStages(newStages); };
+            const clearStageFiles = (index) => { const newStages = [...classStages]; newStages[index].stageFiles = []; newStages[index].folderName = null; setClassStages(newStages); };
+
+            const startSession = () => {
+                const hasGlobal = globalFiles.length > 0;
+                if (settings.isClassMode) {
+                    const errors = [];
+                    classStages.forEach((s, i) => {
+                        const hasSpecific = s.stageFiles && s.stageFiles.length > 0;
+                        if (!hasSpecific && !hasGlobal) errors.push(`阶段 ${i+1} (${s.duration < 60 ? s.duration+'秒' : s.duration/60+'分钟'})`);
+                    });
+                    if (errors.length > 0) { setErrorInfo({ title: "无法开始", content: `以下阶段缺少图片素材：\n${errors.join('\n')}\n请指定图片或添加全局图库。` }); return; }
+                } else {
+                    if (!hasGlobal) { setErrorInfo({ title: "请添加图片", content: "请先添加图片素材。" }); return; }
+                }
+
+                let finalQueue = [];
+                let sessionPool = settings.playbackOrder === 'random' ? shuffleArray(globalFiles) : [...globalFiles];
+                let cursor = 0;
+
+                if (settings.isClassMode) {
+                    classStages.forEach((stage, idx) => {
+                        const useSpecific = stage.stageFiles && stage.stageFiles.length > 0;
+                        let pool = useSpecific ? (settings.playbackOrder === 'random' ? shuffleArray(stage.stageFiles) : [...stage.stageFiles]) : sessionPool;
+                        if (pool.length === 0) return;
+                        
+                        for (let i = 0; i < stage.count; i++) {
+                            if (useSpecific) finalQueue.push({ file: pool[i % pool.length], duration: stage.duration, isLastInStage: i === stage.count - 1, stageIndex: idx + 1 });
+                            else { finalQueue.push({ file: pool[cursor % pool.length], duration: stage.duration, isLastInStage: i === stage.count - 1, stageIndex: idx + 1 }); cursor++; }
+                        }
+                    });
+                } else {
+                    let pool = sessionPool;
+                    let count = settings.count > 0 ? settings.count : pool.length;
+                    if (settings.count === 0) count = pool.length; 
+                    for (let i = 0; i < count; i++) {
+                        finalQueue.push({ file: pool[i % pool.length], duration: settings.duration, isLastInStage: false });
+                    }
+                }
+                
+                if (finalQueue.length > 0) finalQueue[finalQueue.length - 1].isLastTotal = true;
+                setSessionImages(finalQueue); setCurrentIndex(0); setAppState('playing'); setTimeLeft(finalQueue[0].duration); setTotalTimeElapsed(0);
+            };
+
+            const nextImage = useCallback(() => {
+                if (appState === 'stageBreak') return;
+                const img = sessionImages[currentIndex];
+                if (settings.enableStageAlert && img?.isLastInStage && !img?.isLastTotal) {
+                    setAppState('stageBreak'); setNextStageIndex(img.stageIndex + 1);
+                    if (settings.autoContinue) setBreakTimer(settings.breakDuration);
+                    playAlertSound(); return;
+                }
+                if (currentIndex < sessionImages.length - 1) {
+                    const next = currentIndex + 1; setCurrentIndex(next); setTimeLeft(sessionImages[next].duration);
+                } else { setAppState('finished'); }
+            }, [currentIndex, sessionImages, settings, appState]);
+
+            const continueToNext = useCallback(() => {
+                 if (currentIndex < sessionImages.length - 1) {
+                    const next = currentIndex + 1; setCurrentIndex(next); setTimeLeft(sessionImages[next].duration); setAppState('playing');
+                } else { setAppState('finished'); }
+            }, [currentIndex, sessionImages]);
+            
+            const continueToNextStage = () => {
+                continueToNext();
+            };
+
+             const prevImage = useCallback(() => { if (currentIndex > 0) { const prevIdx = currentIndex - 1; setCurrentIndex(prevIdx); setTimeLeft(sessionImages[prevIdx].duration); setAppState('playing'); } }, [currentIndex, sessionImages]);
+
+            const updateStage = (index, field, value) => { const newStages = [...classStages]; newStages[index] = { ...newStages[index], [field]: Number(value) }; setClassStages(newStages); };
+            const addStage = () => setClassStages([...classStages, { duration: 60, count: 5, stageFiles: [], folderName: null }]);
+            const removeStage = (index) => { if (classStages.length > 1) setClassStages(classStages.filter((_, i) => i !== index)); };
+            const getTotalClassTime = () => { let seconds = 0; classStages.forEach(s => seconds += s.duration * s.count); return Math.floor(seconds / 60); };
+
+            const getTimerStyles = () => {
+                if (timeLeft >= 999999) return { colorClass: 'text-white', animClass: '' };
+                const duration = sessionImages[currentIndex]?.duration || settings.duration;
+                const ratio = timeLeft / duration;
+                let colorClass = 'text-white/90';
+                let animClass = '';
+                if (ratio <= 0.1 || timeLeft <= 5) { colorClass = 'text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.9)]'; } else if (ratio <= 0.25) { colorClass = 'text-orange-500 drop-shadow-[0_0_10px_rgba(249,115,22,0.7)]'; } else if (ratio <= 0.5) { colorClass = 'text-yellow-400 drop-shadow-[0_0_8px_rgba(250,204,21,0.6)]'; }
+                const t50 = Math.floor(duration * 0.5);
+                const t25 = Math.floor(duration * 0.25);
+                const t10 = Math.floor(duration * 0.1);
+                if (timeLeft === t50 || timeLeft === t25 || timeLeft === t10) { animClass = 'animate-pop'; } else if (ratio <= 0.1) { animClass = 'animate-pulse'; }
+                return { colorClass, animClass };
+            };
+
+            // Effects
+            // 【更新 3】 监听 currentIndex 变化，如果开启了随机翻转，则计算
+            useEffect(() => {
+                if (settings.randomFlip) {
+                    setCurrentRandomFlip(Math.random() > 0.5);
+                } else {
+                    setCurrentRandomFlip(false);
+                }
+            }, [currentIndex, settings.randomFlip]);
+
+            useEffect(() => { if (appState === 'setup' || sessionImages.length === 0) return; const img = sessionImages[currentIndex]; const url = URL.createObjectURL(img.file); setCurrentImageUrl(url); return () => URL.revokeObjectURL(url); }, [currentIndex, sessionImages, appState]);
+            useEffect(() => { 
+                if (appState !== 'playing') return; 
+                timerRef.current = setInterval(() => { 
+                    setTotalTimeElapsed(p => p + 1); 
+                    setTimeLeft(p => { 
+                        if (p >= 999999) return p; 
+                        if (p > 1 && p <= 4) playTickSound(); 
+                        if (p <= 1) { nextImage(); return 0; } return p - 1; 
+                    }); 
+                }, 1000); 
+                return () => clearInterval(timerRef.current); 
+            }, [appState, nextImage]);
+            useEffect(() => { let interval; if (appState === 'stageBreak' && settings.autoContinue) { interval = setInterval(() => { setBreakTimer(p => { if (p <= 1) { clearInterval(interval); continueToNext(); return 0; } return p - 1; }); }, 1000); } return () => clearInterval(interval); }, [appState, settings.autoContinue, continueToNext]);
+            useEffect(() => { const handleKey = (e) => { if (appState === 'setup' || appState === 'finished') return; if (appState === 'stageBreak') { if (e.code === 'Space' || e.code === 'Enter' || e.code === 'ArrowRight') { e.preventDefault(); continueToNext(); } return; } if (e.code === 'Space') { e.preventDefault(); if(appState !== 'stageBreak') setAppState(prev => prev === 'playing' ? 'paused' : 'playing'); } if (e.code === 'ArrowRight') nextImage(); if (e.code === 'ArrowLeft' && currentIndex > 0) { setCurrentIndex(p => p - 1); setTimeLeft(sessionImages[currentIndex - 1].duration); setAppState('playing'); } }; window.addEventListener('keydown', handleKey); return () => window.removeEventListener('keydown', handleKey); }, [appState, nextImage, continueToNext, currentIndex, sessionImages]);
+
+            // ---------------------------------------------------------------------------
+            // UI Render
+            // ---------------------------------------------------------------------------
+            
+            const getPaginatedFiles = (files) => {
+                const start = (managerPage - 1) * ITEMS_PER_PAGE;
+                const end = start + ITEMS_PER_PAGE;
+                return files.slice(start, end);
+            };
+
+            // 【更新 4】 计算最终显示的图片是否需要翻转（固定翻转 XOR 随机翻转）
+            const isEffectiveFlip = settings.flipHorizontal ? !currentRandomFlip : currentRandomFlip;
+
+            // 【更新 5】 修复滤镜逻辑：将 blur 和 grayscale 统一在这里计算
+            const getImageFilterStyle = () => {
+                let filters = [];
+                if (appState === 'stageBreak') filters.push('blur(20px) brightness(0.3)');
+                if (settings.grayscale) filters.push('grayscale(100%)');
+                return filters.length > 0 ? filters.join(' ') : 'none';
+            };
+
+            if (appState === 'setup') {
+                return (
+                    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans flex flex-col items-center justify-center p-8 relative">
+                        {errorInfo && (<div className="absolute inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-200"><div className="bg-zinc-900 border border-red-900/50 rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-red-900/20"><h3 className="text-xl font-bold text-red-400 mb-4 flex items-center gap-2"><AlertTriangle size={24} /> {errorInfo.title}</h3><div className="text-zinc-300 whitespace-pre-line mb-8 text-sm">{errorInfo.content}</div><button onClick={() => setErrorInfo(null)} className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl border border-zinc-700">知道了</button></div></div>)}
+                        
+                        {/* Preview Modal */}
+                        {previewFile && (<div className="absolute inset-0 z-[90] bg-black/95 flex items-center justify-center p-4" onClick={() => setPreviewFile(null)}><img src={URL.createObjectURL(previewFile)} alt="preview" className="max-w-full max-h-full object-contain shadow-2xl" onLoad={(e) => URL.revokeObjectURL(e.target.src)}/><button className="absolute top-6 right-6 p-2 bg-zinc-800 rounded-full text-white hover:bg-zinc-700"><X size={24}/></button></div>)}
+                        
+                        {/* Global List Manager Modal */}
+                        {showListManager && (
+                            <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+                                <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-5xl shadow-2xl flex flex-col h-[85vh]">
+                                    <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
+                                        <div className="flex items-center gap-3"><LayoutGrid size={20} className="text-blue-400"/> <div><h3 className="font-bold text-lg">图片管理</h3><p className="text-xs text-zinc-500">全局图库 - 每页 {ITEMS_PER_PAGE} 张</p></div></div>
+                                        <div className="flex items-center gap-3"><div className="text-sm text-zinc-400 bg-zinc-800 px-3 py-1 rounded-full">共 {globalFiles.length} 张</div><button onClick={() => {setShowListManager(false); setManagerPage(1);}}><X size={24} className="text-zinc-400 hover:text-white"/></button></div>
+                                    </div>
+                                    <div className="p-6 flex-1 overflow-y-auto bg-zinc-950/50">
+                                        {globalFiles.length === 0 ? 
+                                            (<div className="text-center text-zinc-500 py-20 flex flex-col items-center"><ImageIcon size={48} className="mb-4 opacity-20" /><p>暂无图片</p></div>) : 
+                                            (<div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                                                {getPaginatedFiles(globalFiles).map((file, i) => (
+                                                    <ThumbnailItem 
+                                                        key={i} 
+                                                        file={file} 
+                                                        index={i} 
+                                                        onRemove={(idx) => removeGlobalFile((managerPage-1)*ITEMS_PER_PAGE + idx)} 
+                                                        onPreview={setPreviewFile} 
+                                                        onDragStart={onDragStart} 
+                                                        onDrop={(e, dropIdx) => onDrop(e, dropIdx, true)} 
+                                                        onDragOver={onDragOver} 
+                                                    />
+                                                ))}
+                                            </div>)
+                                        }
+                                    </div>
+                                    <div className="p-4 border-t border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-b-xl">
+                                        <button onClick={() => setGlobalFiles([])} className="px-4 py-2 rounded-lg text-sm bg-red-900/20 text-red-400 hover:bg-red-900/40 flex items-center gap-2 border border-red-900/30"><Trash2 size={16}/> 清空</button>
+                                        
+                                        <div className="flex items-center gap-4 text-sm">
+                                            <button disabled={managerPage===1} onClick={()=>setManagerPage(p=>p-1)} className="p-1 rounded hover:bg-zinc-800 disabled:opacity-30"><ChevronLeft size={20}/></button>
+                                            <span className="text-zinc-400">{managerPage} / {Math.ceil(globalFiles.length/ITEMS_PER_PAGE) || 1}</span>
+                                            <button disabled={managerPage >= Math.ceil(globalFiles.length/ITEMS_PER_PAGE)} onClick={()=>setManagerPage(p=>p+1)} className="p-1 rounded hover:bg-zinc-800 disabled:opacity-30"><ChevronRight size={20}/></button>
+                                        </div>
+
+                                        <button onClick={() => {setShowListManager(false); setManagerPage(1);}} className="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium">确认完成</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Stage List Manager Modal */}
+                        {managingStageIndex !== null && (
+                            <div className="absolute inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+                                <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-5xl shadow-2xl flex flex-col h-[85vh]">
+                                    <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
+                                        <div className="flex items-center gap-3"><LayoutGrid size={20} className="text-green-400"/> <div><h3 className="font-bold text-lg">阶段 {managingStageIndex + 1} 图片管理</h3><p className="text-xs text-zinc-500">特定阶段素材</p></div></div>
+                                        <div className="flex items-center gap-3"><div className="text-sm text-zinc-400 bg-zinc-800 px-3 py-1 rounded-full">共 {classStages[managingStageIndex].stageFiles.length} 张</div><button onClick={() => setManagingStageIndex(null)}><X size={24} className="text-zinc-400 hover:text-white"/></button></div>
+                                    </div>
+                                    <div className="p-6 flex-1 overflow-y-auto bg-zinc-950/50">
+                                        {classStages[managingStageIndex].stageFiles.length === 0 ? 
+                                            (<div className="text-center text-zinc-500 py-20 flex flex-col items-center"><ImageIcon size={48} className="mb-4 opacity-20" /><p>此阶段暂无特定图片</p></div>) : 
+                                            (<div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                                                {classStages[managingStageIndex].stageFiles.map((file, i) => (
+                                                    <ThumbnailItem key={i} file={file} index={i} 
+                                                        onRemove={(idx) => removeStageFile(managingStageIndex, idx)} 
+                                                        onPreview={setPreviewFile} 
+                                                        onDragStart={onDragStart} 
+                                                        onDrop={(e, dropIdx) => onDrop(e, dropIdx, false, managingStageIndex)} 
+                                                        onDragOver={onDragOver} 
+                                                    />
+                                                ))}
+                                            </div>)
+                                        }
+                                    </div>
+                                    <div className="p-4 border-t border-zinc-800 flex justify-between bg-zinc-900 rounded-b-xl">
+                                        <div className="flex gap-3">
+                                            <button onClick={() => clearStageFiles(managingStageIndex)} className="px-4 py-2 rounded-lg text-sm bg-red-900/20 text-red-400 hover:bg-red-900/40 flex items-center gap-2 border border-red-900/30"><Trash2 size={16}/> 清空</button>
+                                            <button onClick={() => sortStageFiles(managingStageIndex)} className="px-4 py-2 rounded-lg text-sm bg-zinc-800 text-blue-400 hover:bg-zinc-700 flex items-center gap-2 border border-zinc-700"><ListOrdered size={16}/> 排序</button>
+                                        </div>
+                                        <button onClick={() => setManagingStageIndex(null)} className="px-6 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white font-medium">确认完成</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Class Editor Modal */}
+                        {showClassEditor && (
+                            <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                                <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-4xl shadow-2xl flex flex-col max-h-[90vh]">
+                                    <div className="p-5 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
+                                        <h3 className="font-bold text-xl flex items-center gap-2 text-blue-400"><Edit2 size={20} /> 课程编排</h3>
+                                        <button onClick={() => setShowClassEditor(false)} className="text-zinc-400 hover:text-white"><X size={24} /></button>
+                                    </div>
+                                    <div className="p-6 overflow-y-auto flex-1 space-y-4 bg-zinc-950/30">
+                                        {classStages.map((stage, idx) => (
+                                            <div key={idx} className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 flex flex-col gap-4 shadow-sm">
+                                                <div className="flex items-center justify-between border-b border-zinc-800/50 pb-2">
+                                                    <span className="text-blue-400 font-bold text-sm tracking-wide">PHASE {idx + 1}</span>
+                                                    <button onClick={() => removeStage(idx)} disabled={classStages.length <= 1} className="text-zinc-600 hover:text-red-400 transition-colors"><Trash2 size={16} /></button>
+                                                </div>
+                                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                                    <div className="flex gap-4 lg:col-span-2">
+                                                        <div className="flex-1">
+                                                            <label className="text-[11px] uppercase text-zinc-500 font-bold mb-1.5 block">Duration</label>
+                                                            <div className="relative">
+                                                                <input type="number" min="1" value={stage.duration} onChange={(e) => updateStage(idx, 'duration', e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm focus:border-blue-500 outline-none transition-all" />
+                                                                <span className="absolute right-3 top-2 text-xs text-zinc-600 pointer-events-none">{stage.duration < 60 ? 'sec' : 'min'}</span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex-1">
+                                                            <label className="text-[11px] uppercase text-zinc-500 font-bold mb-1.5 block">Count</label>
+                                                            <input type="number" min="1" value={stage.count} onChange={(e) => updateStage(idx, 'count', e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm focus:border-blue-500 outline-none transition-all" />
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-[11px] uppercase text-zinc-500 font-bold mb-1.5 block">Source (Optional)</label>
+                                                        <div className="flex flex-col gap-2">
+                                                            {stage.stageFiles && stage.stageFiles.length > 0 && (
+                                                                <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded-lg p-1.5">
+                                                                    <div className="p-1 bg-green-900/30 text-green-400 rounded"><Folder size={14}/></div>
+                                                                    <div className="flex-1 min-w-0">
+                                                                        <div className="text-xs text-zinc-300 truncate font-medium">{stage.folderName || 'Selection'}</div>
+                                                                        <div className="text-[10px] text-zinc-500">{stage.stageFiles.length} images</div>
+                                                                    </div>
+                                                                    <div className="flex gap-1">
+                                                                        <button onClick={() => setManagingStageIndex(idx)} className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white rounded" title="管理"><LayoutGrid size={14}/></button>
+                                                                        <button onClick={() => clearStageFiles(idx)} className="p-1.5 bg-zinc-800 hover:bg-red-900/30 text-zinc-400 hover:text-red-400 rounded" title="清空"><X size={14}/></button>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            <div className="flex gap-2">
+                                                                <label className="flex-1 flex items-center justify-center gap-1 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200 text-[10px] py-1.5 rounded-lg cursor-pointer transition-colors" title="Add Folder"><input type="file" webkitdirectory="" directory="" multiple className="hidden" onChange={(e) => handleStageFolderSelect(e, idx)} /><FolderOpen size={12} /> +Folder</label>
+                                                                <label className="flex-1 flex items-center justify-center gap-1 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200 text-[10px] py-1.5 rounded-lg cursor-pointer transition-colors" title="Add Images"><input type="file" multiple className="hidden" onChange={(e) => handleStageFileSelect(e, idx)} /><FileImage size={12} /> +Files</label>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        <button onClick={addStage} className="w-full py-3 border-2 border-dashed border-zinc-800 text-zinc-500 rounded-xl hover:border-blue-500 hover:text-blue-400 transition-all flex items-center justify-center gap-2"><Plus size={18} /> 添加新阶段</button>
+                                    </div>
+                                    <div className="p-5 border-t border-zinc-800 bg-zinc-900 rounded-b-xl flex justify-between items-center">
+                                        <div className="text-sm text-zinc-500">总时长: <span className="text-zinc-300 font-mono">~{getTotalClassTime()}</span> 分钟</div>
+                                        <button onClick={() => setShowClassEditor(false)} className="px-8 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold flex items-center gap-2 shadow-lg shadow-blue-900/20"><Save size={18} /> 保存设置</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        
+                        {/* Main Layout Content */}
+                        <div className="max-w-5xl w-full space-y-8">
+                            <div className="text-center space-y-1 mb-4"><h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-500 tracking-tighter flex items-center justify-center gap-4 pb-2"><ImageIcon size={48} className="text-blue-500" /> RefFlow</h1><p className="text-zinc-500 font-medium">完全本地化速写训练工具</p></div>
+                            
+                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                {/* Left Column */}
+                                <div className="lg:col-span-4 flex flex-col gap-4">
+                                    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 flex flex-col items-center text-center h-full justify-center shadow-lg relative overflow-hidden group cursor-pointer transition-all hover:border-blue-500/30" onClick={() => fileInputRef.current.click()} onDragOver={onDragOver} onDrop={onMainDrop}>
+                                        <input type="file" ref={folderInputRef} webkitdirectory="" directory="" multiple className="hidden" onChange={handleFolderSelect} onClick={(e) => e.stopPropagation()} />
+                                        <input type="file" ref={fileInputRef} multiple className="hidden" onChange={handleFileSelect} onClick={(e) => e.stopPropagation()} />
+                                        {globalFiles.length > 0 ? (
+                                            <div className="w-full space-y-4 z-10" onClick={(e) => e.stopPropagation()}>
+                                                <div className="w-20 h-20 mx-auto bg-blue-600/10 rounded-full flex items-center justify-center border border-blue-500/20 text-blue-400 shadow-[0_0_30px_rgba(37,99,235,0.15)]"><List size={32} /></div>
+                                                <div><h2 className="text-2xl font-bold text-white">{globalFiles.length}</h2><p className="text-sm text-zinc-500">张图片已加载 (全局)</p>{globalFolderName && <div className="mt-1 inline-block px-2 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 max-w-[200px] truncate">{globalFolderName}</div>}</div>
+                                                <button onClick={() => setShowListManager(true)} className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-xl font-medium transition-all flex items-center justify-center gap-2 border border-zinc-700/50 hover:border-zinc-600"><LayoutGrid size={16} /> 管理全局列表</button>
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-4 z-10 pointer-events-none">
+                                                <div className="w-20 h-20 mx-auto bg-zinc-800 rounded-full flex items-center justify-center border border-zinc-700 text-zinc-600 group-hover:border-blue-500/50 group-hover:text-blue-400 transition-colors"><UploadCloud size={32} /></div>
+                                                <div><h3 className="text-lg font-medium text-zinc-300 group-hover:text-blue-200 transition-colors">点击或拖拽添加图片</h3><p className="text-sm text-zinc-500">支持 jpg, png, webp 等格式</p></div>
+                                            </div>
+                                        )}
+                                        <div className="grid grid-cols-1 w-full mt-6 z-10" onClick={(e) => e.stopPropagation()}>
+                                            <button onClick={() => folderInputRef.current.click()} className="py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-medium transition-colors border border-zinc-700/50 flex items-center justify-center gap-2"><FolderOpen size={16} /> 添加文件夹</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                {/* Right Column */}
+                                <div className="lg:col-span-8 flex flex-col gap-6">
+                                    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-lg">
+                                        <div className="flex items-center gap-2 mb-6 text-blue-400 font-bold tracking-wide uppercase text-xs"><Clock size={14} /> 播放设置</div>
+                                        <div className="space-y-6">
+                                            <div className="flex flex-col gap-2"><label className="text-sm font-medium text-zinc-400">播放顺序</label><div className="grid grid-cols-2 gap-2 bg-zinc-950 p-1 rounded-xl border border-zinc-800">{['random', 'ordered'].map(mode => (<button key={mode} onClick={() => setSettings({...settings, playbackOrder: mode})} className={`py-2 rounded-lg text-xs font-medium flex items-center justify-center gap-2 transition-all ${settings.playbackOrder === mode ? 'bg-zinc-800 text-white shadow-sm border border-zinc-700' : 'text-zinc-500 hover:text-zinc-300'}`}>{mode === 'random' ? <Shuffle size={14}/> : <ListOrdered size={14}/>}{mode === 'random' ? '随机乱序' : '列表顺序'}</button>))}</div></div>
+                                            <div className="h-px bg-zinc-800/50 w-full" />
+                                            
+                                            <div className="flex flex-col gap-4">
+                                                {/* Fixed Mode */}
+                                                <div className={`transition-all duration-300 ${settings.isClassMode ? 'opacity-40' : 'opacity-100'}`}>
+                                                    <label className="flex items-center gap-3 cursor-pointer mb-3"><div className={`w-5 h-5 rounded-full border flex items-center justify-center ${!settings.isClassMode ? 'border-blue-500' : 'border-zinc-600'}`}>{!settings.isClassMode && <div className="w-2.5 h-2.5 bg-blue-500 rounded-full" />}</div><input type="radio" className="hidden" checked={!settings.isClassMode} onChange={() => setSettings({...settings, isClassMode: false})} /><span className={`font-medium ${!settings.isClassMode ? 'text-white' : 'text-zinc-400'}`}>固定时间模式</span></label>
+                                                    <div className={`pl-8 space-y-4 ${settings.isClassMode ? 'pointer-events-none' : ''}`}>
+                                                        <div className="space-y-2">
+                                                            <div className="text-xs text-zinc-500">单张时长</div>
+                                                            <div className="flex flex-wrap gap-2">{[30, 45, 60, 120, 300, 600].map(sec => (<button key={sec} onClick={() => setSettings({...settings, duration: sec})} className={`px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${settings.duration === sec ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:bg-zinc-700'}`}>{sec < 60 ? `${sec}s` : `${sec/60}m`}</button>))}<div className="flex items-center gap-1 ml-auto bg-zinc-950 border border-zinc-700 rounded px-1"><span className="text-[10px] text-zinc-500 mr-1">自定义</span><input type="number" value={settings.duration / timeUnitMultiplier} onChange={(e) => setSettings({...settings, duration: Number(e.target.value) * timeUnitMultiplier})} className="w-12 bg-transparent py-1 text-xs text-center focus:outline-none text-zinc-200" /><div className="relative"><select value={timeUnitMultiplier} onChange={(e) => setTimeUnitMultiplier(Number(e.target.value))} className="bg-transparent text-[10px] text-zinc-500 appearance-none py-1 pr-3 pl-1 cursor-pointer focus:outline-none hover:text-zinc-300"><option value={1}>s</option><option value={60}>m</option><option value={3600}>h</option></select><ChevronDown size={8} className="absolute right-0 top-1.5 text-zinc-600 pointer-events-none" /></div></div></div>
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <div className="text-xs text-zinc-500 flex justify-between"><span>数量限制</span><span className="text-[10px] opacity-60">0 = 无限</span></div>
+                                                            <div className="flex flex-wrap gap-2 items-center">{[10, 20, 30, 50, 0].map(num => (<button key={num} onClick={() => setSettings({...settings, count: num})} className={`px-2 py-1 rounded text-[10px] border transition-colors ${settings.count === num ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:border-zinc-600'}`}>{num === 0 ? '全部' : num}</button>))}<div className="flex items-center gap-1 ml-auto bg-zinc-950 border border-zinc-800 rounded px-2 py-0.5"><span className="text-[10px] text-zinc-500 mr-1">自定义</span><input type="number" min="0" max="999" value={settings.count} onChange={(e) => setSettings({...settings, count: parseInt(e.target.value) || 0})} className="w-10 bg-transparent text-xs text-center outline-none text-zinc-300" /></div></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                {/* Class Mode */}
+                                                <div className={`transition-all duration-300 ${!settings.isClassMode ? 'opacity-50' : 'opacity-100'}`}>
+                                                    <div className="flex justify-between items-center mb-3"><label className="flex items-center gap-3 cursor-pointer"><div className={`w-5 h-5 rounded-full border flex items-center justify-center ${settings.isClassMode ? 'border-blue-500' : 'border-zinc-600'}`}>{settings.isClassMode && <div className="w-2.5 h-2.5 bg-blue-500 rounded-full" />}</div><input type="radio" className="hidden" checked={settings.isClassMode} onChange={() => setSettings({...settings, isClassMode: true})} /><span className={`font-medium ${settings.isClassMode ? 'text-white' : 'text-zinc-400'}`}>课程模式</span></label><button onClick={() => { setSettings({...settings, isClassMode: true}); setShowClassEditor(true); }} className={`px-3 py-1.5 rounded-full border text-xs font-medium flex items-center gap-1.5 transition-colors ${settings.isClassMode ? 'border-blue-500 text-blue-400 bg-blue-500/10' : 'border-zinc-700 text-zinc-500'}`}><Edit2 size={12} /> 编辑流程</button></div>
+                                                    {settings.isClassMode && (
+                                                        <div className="pl-8 space-y-3">
+                                                            <div className="flex gap-2 overflow-x-auto pb-2">{classStages.map((s, i) => (<div key={i} className="flex-shrink-0 bg-zinc-950 border border-zinc-800 rounded px-3 py-2 min-w-[100px]"><div className="text-[10px] text-zinc-500 uppercase font-bold">Stage {i+1}</div><div className="text-sm font-mono text-zinc-300">{s.duration < 60 ? s.duration+'s' : s.duration/60+'m'} <span className="text-zinc-600">x</span> {s.count}</div></div>))}</div>
+                                                            <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800/50 flex items-center gap-6">
+                                                                <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-400 hover:text-zinc-200"><input type="checkbox" className="accent-blue-500" checked={settings.enableStageAlert} onChange={(e) => setSettings({...settings, enableStageAlert: e.target.checked})} /><span>阶段间歇提示</span></label>
+                                                                {settings.enableStageAlert && (<div className="flex items-center gap-3 border-l border-zinc-800 pl-6"><label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-400"><input type="checkbox" className="accent-blue-500" checked={settings.autoContinue} onChange={(e) => setSettings({...settings, autoContinue: e.target.checked})} /><span>自动继续</span></label>{settings.autoContinue && <div className="flex items-center gap-1"><input type="number" min="1" max="60" value={settings.breakDuration} onChange={(e) => setSettings({...settings, breakDuration: parseInt(e.target.value)||5})} className="w-10 bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 text-xs text-center outline-none" /><span className="text-[10px] text-zinc-600">秒</span></div>}</div>)}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-lg flex flex-col justify-between gap-6">
+                                        <div>
+                                            <div className="flex items-center gap-2 mb-4 text-blue-400 font-bold tracking-wide uppercase text-xs"><Monitor size={14} /> 显示选项</div>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                {/* 【更新 6】 显示选项 UI：添加随机水平翻转 */}
+                                                <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-300"><input type="checkbox" className="accent-blue-500" checked={settings.grayscale} onChange={(e) => setSettings({...settings, grayscale: e.target.checked})} /> 黑白模式</label>
+                                                <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-300"><input type="checkbox" className="accent-blue-500" checked={settings.flipHorizontal} onChange={(e) => setSettings({...settings, flipHorizontal: e.target.checked})} /> 固定翻转</label>
+                                                <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-300"><input type="checkbox" className="accent-blue-500" checked={settings.randomFlip} onChange={(e) => setSettings({...settings, randomFlip: e.target.checked})} /> 随机翻转</label>
+                                                <div className="flex items-center gap-2"><span className="text-xs text-zinc-500">填充:</span><select value={settings.fitMode} onChange={(e) => setSettings({...settings, fitMode: e.target.value})} className="bg-zinc-950 border border-zinc-800 rounded px-2 py-0.5 text-xs outline-none text-zinc-300"><option value="contain">完整显示</option><option value="cover">充满屏幕</option></select></div>
+                                            </div>
+                                        </div>
+                                        <button onClick={startSession} className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl font-bold text-lg shadow-lg shadow-blue-900/30 transition-all active:scale-[0.98] flex items-center justify-center gap-2"><Play size={20} fill="currentColor" /> 开始练习</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+            
+            if (appState === 'finished') {
+                return (
+                    <div className="min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center p-4">
+                        <div className="bg-zinc-900 p-8 rounded-2xl shadow-2xl border border-zinc-800 text-center space-y-6 max-w-md w-full">
+                            <div className="w-24 h-24 bg-green-500/10 rounded-full flex items-center justify-center mx-auto text-green-500"><Layers size={48} /></div>
+                            <h2 className="text-3xl font-bold text-white">练习完成!</h2>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800">
+                                    <div className="text-zinc-500 text-xs uppercase font-bold mb-1">Drawings</div>
+                                    <div className="text-2xl font-mono">{currentIndex + 1}</div>
+                                </div>
+                                <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800">
+                                    <div className="text-zinc-500 text-xs uppercase font-bold mb-1">Duration</div>
+                                    <div className="text-2xl font-mono">{Math.floor(totalTimeElapsed / 60)}m</div>
+                                </div>
+                            </div>
+                            <button onClick={stopSession} className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-medium transition-colors">返回主菜单</button>
+                        </div>
+                    </div>
+                );
+            }
+
+            const { colorClass, animClass } = getTimerStyles();
+
+            return (
+                <div className="relative h-screen w-screen bg-black overflow-hidden flex flex-col">
+                   <div className="absolute top-0 left-0 right-0 z-20 flex justify-between items-start p-6 pointer-events-none">
+                      <div key={timeLeft} className={`bg-black/40 backdrop-blur-md border border-white/10 px-6 py-3 rounded-full font-mono text-2xl font-bold tracking-wider shadow-lg transition-colors duration-300 ${colorClass} ${animClass}`}>{timeLeft >= 999999 ? "∞" : formatTime(timeLeft)}</div>
+                      <div className="bg-black/40 backdrop-blur-md border border-white/10 px-3 py-1 rounded-full text-white/60 text-sm">{currentIndex + 1} / {sessionImages.length}</div>
+                   </div>
+                   {appState === 'paused' && (
+                       <div className="absolute inset-0 z-30 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center text-white">
+                           <Pause size={80} className="mb-6 text-white/50" />
+                           <h2 className="text-4xl font-black tracking-widest mb-8">PAUSED</h2>
+                           <div className="flex gap-4">
+                               <button onClick={togglePause} className="px-8 py-3 bg-blue-600 hover:bg-blue-500 rounded-full transition-colors font-bold flex items-center gap-2"><Play size={20} fill="currentColor"/> 继续练习</button>
+                               <button onClick={stopSession} className="px-8 py-3 border border-white/20 hover:bg-white/10 rounded-full transition-colors text-zinc-400 hover:text-white">结束练习</button>
+                           </div>
+                           <p className="mt-8 text-zinc-500 text-sm">按 Space 继续</p>
+                       </div>
+                   )}
+                   {appState === 'stageBreak' && (
+                       <div className="absolute inset-0 z-40 bg-black/90 backdrop-blur-md flex items-center justify-center">
+                           <div className="text-center space-y-8 animate-in fade-in zoom-in duration-300">
+                               <div className="inline-block p-6 bg-blue-500/20 rounded-full text-blue-400 mb-4"><Bell size={48} /></div>
+                               <h2 className="text-4xl font-bold text-white">阶段 {nextStageIndex - 1} 完成</h2>
+                               <button onClick={continueToNextStage} className="group bg-blue-600 hover:bg-blue-500 text-white px-10 py-4 rounded-2xl font-bold text-xl transition-all hover:scale-105 shadow-2xl shadow-blue-600/20 flex items-center gap-3 mx-auto">{settings.autoContinue ? `即将开始 (${breakTimer}s)` : "进入下一阶段"}{settings.autoContinue ? <Timer className="animate-spin-slow"/> : <ArrowRight className="group-hover:translate-x-1 transition-transform"/>}</button>
+                               <div className="text-zinc-500 text-sm">按 空格键 继续</div>
+                           </div>
+                       </div>
+                   )}
+                   <div className="flex-1 flex items-center justify-center w-full h-full relative">
+                      {currentImageUrl && <img 
+                          src={currentImageUrl} 
+                          // 【更新 7】 应用新的翻转逻辑 (isEffectiveFlip) 和内联样式 (getImageFilterStyle)
+                          className={`transition-opacity duration-500 max-w-full max-h-full ${settings.fitMode === 'cover' ? 'w-full h-full object-cover' : 'w-full h-full object-contain'} ${isEffectiveFlip ? '-scale-x-100' : ''}`} 
+                          style={{filter: getImageFilterStyle()}} 
+                      />}
+                   </div>
+                   <div className="absolute bottom-0 left-0 right-0 z-20 p-8 flex justify-center items-center gap-8 opacity-0 hover:opacity-100 transition-opacity duration-300 bg-gradient-to-t from-black/80 to-transparent">
+                      <button onClick={stopSession} className="p-4 rounded-full bg-zinc-900/80 text-zinc-500 hover:text-red-400 hover:bg-zinc-800 border border-white/5 transition-all"><X size={24}/></button>
+                      <button onClick={prevImage} className="p-4 rounded-full bg-zinc-900/80 text-white hover:bg-zinc-800 border border-white/5 transition-all"><SkipBack size={28}/></button>
+                      <button onClick={togglePause} className="p-6 rounded-full bg-white text-black hover:scale-105 transition-all shadow-xl shadow-white/10">{appState === 'playing' ? <Pause size={32} fill="currentColor"/> : <Play size={32} fill="currentColor"/>}</button>
+                      <button onClick={nextImage} className="p-4 rounded-full bg-zinc-900/80 text-white hover:bg-zinc-800 border border-white/5 transition-all"><SkipForward size={28}/></button>
+                      <div className="w-14"></div>
+                   </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<RefFlow />);
+    </script>
+</body>
+</html>
