@@ -1,6 +1,6 @@
 {
   "name": "RefFlow",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A focused, offline-first local reference trainer for artists.",
   "main": "main.js",
   "scripts": {
@@ -13,17 +13,18 @@
     "electron": "^28.0.0",
     "electron-builder": "^24.9.1"
   },
-  "build": {
+"build": {
     "appId": "com.yourname.reftrainer",
     "productName": "RefFlow",
     "files": [
       "index.html",
       "main.js",
+      "preload.js",
       "libs/**/*"
     ],
     "win": {
       "target": "nsis",
-      "icon": "icon.ico" 
+      "icon": "icon.ico"
     },
     "nsis": {
       "oneClick": false,

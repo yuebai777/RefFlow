@@ -172,15 +172,16 @@
         // 主逻辑组件
         // -----------------------------------------------------------------------------
         // -----------------------------------------------------------------------------
-        // 自定义标题栏组件 (修复版：置顶模式下依然自动隐藏)
         // -----------------------------------------------------------------------------
-        const CustomTitleBar = () => {
+        // 自定义标题栏组件 (接收 appState 参数以判断是否需要常驻显示)
+        // -----------------------------------------------------------------------------
+        // 注意这里的大括号 { appState }，这是在接收参数
+        const CustomTitleBar = ({ appState }) => {
             const [isPinned, setIsPinned] = useState(false);
             const [isHoveringTop, setIsHoveringTop] = useState(false);
 
             useEffect(() => {
                 const handleMouseMove = (e) => {
-                    // 检测鼠标是否在窗口顶部区域 (60px)
                     if (e.clientY < 60) {
                         setIsHoveringTop(true);
                     } else {
@@ -197,30 +198,25 @@
                 if (window.electronAPI) window.electronAPI.setAlwaysOnTop(newState);
             };
 
-            // 【关键修改】这里去掉了 isPinned 的判断
-            // 现在无论是否置顶，只要鼠标离开顶部，标题栏就会隐藏
-            const show = isHoveringTop;
+            // 逻辑：鼠标在顶部，或者不在播放状态（即菜单或结算页）时，都强制显示
+            // 这里的 appState 现在是从外部传进来的，不会报错了
+            const show = isHoveringTop || (appState === 'setup' || appState === 'finished');
 
             return (
                 <div 
                     className={`fixed top-0 left-0 w-full h-10 z-[9999] flex justify-end items-center transition-all duration-300 ease-in-out border-b border-white/10 bg-black/90 backdrop-blur-md ${show ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'}`}
                 >
-                    {/* 拖拽区域 */}
                     <div style={{WebkitAppRegion: 'drag'}} className="absolute inset-0 w-full h-full" />
                     
-                    {/* 按钮区域 */}
                     <div className="relative z-10 flex items-center h-full mr-3 gap-2" style={{WebkitAppRegion: 'no-drag'}}>
                         <button 
                             onClick={togglePin} 
                             className={`p-1.5 rounded hover:bg-zinc-700 transition-colors ${isPinned ? 'text-blue-400 bg-blue-500/10' : 'text-zinc-400'}`}
                             title={isPinned ? "取消置顶" : "窗口置顶"}
                         >
-                            {/* 如果置顶了，给个稍微明显的背景色，这样滑下来时一眼能看到是开启状态 */}
                             <Pin size={16} fill={isPinned ? "currentColor" : "none"} />
                         </button>
-                        
                         <div className="w-px h-4 bg-zinc-700 mx-1"></div>
-
                         <button onClick={() => window.electronAPI?.minimize()} className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-700 rounded"><Minus size={16}/></button>
                         <button onClick={() => window.electronAPI?.maximize()} className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-700 rounded"><Square size={14}/></button>
                         <button onClick={() => window.electronAPI?.close()} className="p-1.5 text-zinc-400 hover:text-white hover:bg-red-600 rounded"><X size={16}/></button>
@@ -469,7 +465,7 @@
             if (appState === 'setup') {
                 return (
                     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans flex flex-col items-center justify-center p-8 relative">
-                        <CustomTitleBar />
+                        <CustomTitleBar appState={appState} />
                         {errorInfo && (<div className="absolute inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-200"><div className="bg-zinc-900 border border-red-900/50 rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-red-900/20"><h3 className="text-xl font-bold text-red-400 mb-4 flex items-center gap-2"><AlertTriangle size={24} /> {errorInfo.title}</h3><div className="text-zinc-300 whitespace-pre-line mb-8 text-sm">{errorInfo.content}</div><button onClick={() => setErrorInfo(null)} className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl border border-zinc-700">知道了</button></div></div>)}
                         
                         {/* Preview Modal */}
@@ -707,7 +703,7 @@
             if (appState === 'finished') {
                 return (
                     <div className="min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center p-4">
-                        <CustomTitleBar />
+                        <CustomTitleBar appState={appState} />
                         <div className="bg-zinc-900 p-8 rounded-2xl shadow-2xl border border-zinc-800 text-center space-y-6 max-w-md w-full">
                             <div className="w-24 h-24 bg-green-500/10 rounded-full flex items-center justify-center mx-auto text-green-500"><Layers size={48} /></div>
                             <h2 className="text-3xl font-bold text-white">练习完成!</h2>
@@ -731,7 +727,7 @@
 
             return (
                 <div className="relative h-screen w-screen bg-black overflow-hidden flex flex-col">
-                   <CustomTitleBar />
+                   <CustomTitleBar appState={appState} />
                    <div className="absolute top-0 left-0 right-0 z-20 flex justify-between items-start p-6 pointer-events-none">
                       <div className="flex items-center gap-3">
                           {/* 倒计时 */}
