@@ -121,7 +121,7 @@
                 
                 img.onload = () => {
                     // 2. 计算缩放比例，限制最大宽高为 240px
-                    const maxDim = 240;
+                    const maxDim = 360;
                     let w = img.width;
                     let h = img.height;
                     
@@ -156,32 +156,13 @@
             });
         };
 
-// -----------------------------------------------------------------------------
-        // 缩略图组件 (升级版：自动压缩 + 渐显效果)
+        // -----------------------------------------------------------------------------
+        // 缩略图组件 (极速版：直接读取缓存)
         // -----------------------------------------------------------------------------
         const ThumbnailItem = React.memo(({ file, index, onRemove, onPreview, onDragStart, onDrop, onDragOver }) => {
-            const [thumbUrl, setThumbUrl] = useState(null);
-            const [isLoaded, setIsLoaded] = useState(false);
-            
-            useEffect(() => {
-                let active = true;
-                
-                // 异步生成缩略图
-                createThumbnail(file).then(url => {
-                    if (active) {
-                        setThumbUrl(url);
-                    } else {
-                        // 如果组件已经卸载，就直接释放这个 URL
-                        URL.revokeObjectURL(url);
-                    }
-                });
-
-                return () => {
-                    active = false;
-                    // 组件卸载时，清理缩略图占用的内存
-                    if (thumbUrl) URL.revokeObjectURL(thumbUrl);
-                };
-            }, [file]);
+            // 直接读取文件对象上的 thumbUrl
+            // 如果后台还没生成好，先显示个加载圈
+            const hasThumb = !!file.thumbUrl;
 
             return (
                 <div 
@@ -191,18 +172,17 @@
                     onDrop={(e) => onDrop(e, index)}
                     className="relative group aspect-square bg-zinc-900 rounded-lg border border-zinc-800 overflow-hidden cursor-move hover:border-blue-500/50 transition-colors"
                 >
-                    {thumbUrl ? (
+                    {hasThumb ? (
                         <img 
-                            src={thumbUrl} 
+                            src={file.thumbUrl} 
                             alt="thumb" 
-                            // 图片加载完成后才显示，避免闪烁
-                            onLoad={() => setIsLoaded(true)}
-                            className={`w-full h-full object-cover pointer-events-none select-none transition-opacity duration-300 ${isLoaded ? 'opacity-100' : 'opacity-0'}`} 
+                            loading="lazy"
+                            className="w-full h-full object-cover pointer-events-none select-none animate-in fade-in duration-300" 
                         />
                     ) : (
-                        // 加载中的占位符
-                        <div className="w-full h-full flex items-center justify-center text-zinc-700">
-                           <div className="animate-pulse bg-zinc-800 w-full h-full"></div>
+                        // 这里是等待后台生成时的占位符
+                        <div className="w-full h-full flex items-center justify-center text-zinc-700 bg-zinc-900">
+                            <div className="animate-pulse"><ImageIcon size={24} className="opacity-20"/></div>
                         </div>
                     )}
                     
@@ -212,7 +192,6 @@
                             <button onClick={(e) => { e.stopPropagation(); onRemove(index); }} className="bg-red-900/80 p-1 rounded text-red-200 hover:bg-red-600"><X size={14}/></button>
                         </div>
                         <div className="flex justify-center">
-                            {/* 预览时传递原始 file，保证查看大图 */}
                             <button onClick={(e) => { e.stopPropagation(); onPreview(file); }} className="bg-blue-600/80 px-2 py-1 rounded text-xs text-white flex items-center gap-1 hover:bg-blue-500"><Eye size={12}/> 预览</button>
                         </div>
                         <div className="text-[10px] text-zinc-400 truncate text-center px-1 bg-black/40 rounded">{file.name}</div>
@@ -220,7 +199,6 @@
                 </div>
             );
         });
-
             
 
         // -----------------------------------------------------------------------------
@@ -326,6 +304,55 @@
             const [breakTimer, setBreakTimer] = useState(0);
             
             const [currentRandomFlip, setCurrentRandomFlip] = useState(false);
+            // -----------------------------------------------------------------------------
+            // 后台任务：自动为没有缩略图的图片生成缩略图
+            // -----------------------------------------------------------------------------
+            useEffect(() => {
+                let isActive = true;
+                
+                const processNextThumbnail = async () => {
+                    // 1. 在全局列表中找一张还没有 thumbUrl 的图片
+                    // 我们直接把 thumbUrl 属性挂载到 file 对象上，JS 允许这么做
+                    const index = globalFiles.findIndex(f => !f.thumbUrl && !f.isFailed);
+                    
+                    if (index === -1) return; // 所有图片都处理完了，休息
+
+                    const file = globalFiles[index];
+                    
+                    try {
+                        // 2. 生成缩略图 (耗时操作)
+                        const url = await createThumbnail(file);
+                        
+                        if (!isActive) return;
+
+                        // 3. 更新状态 (将生成的 URL 存入 file 对象)
+                        setGlobalFiles(prev => {
+                            const newFiles = [...prev];
+                            // 这里直接修改对象的属性，标记已完成
+                            // 注意：必须创建一个新数组触发 React 更新，但对象引用可以复用
+                            const updatedFile = newFiles[index];
+                            if (url) {
+                                updatedFile.thumbUrl = url;
+                            } else {
+                                updatedFile.isFailed = true; // 标记失败防止死循环
+                            }
+                            return newFiles;
+                        });
+                    } catch (e) {
+                        console.error("缩略图生成失败", e);
+                    }
+                };
+
+                // 这里的延时很重要！
+                // 给 CPU 喘息时间，避免一次性生成导致界面卡死
+                // 70ms 处理一张
+                const timer = setTimeout(processNextThumbnail, 70);
+
+                return () => {
+                    isActive = false;
+                    clearTimeout(timer);
+                };
+            }, [globalFiles]); // 只要文件列表变了，就重新检查队列
 
             const folderInputRef = useRef(null);
             const fileInputRef = useRef(null);
