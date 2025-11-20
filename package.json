@@ -1,6 +1,6 @@
 {
   "name": "RefFlow",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A focused, offline-first local reference trainer for artists.",
   "main": "main.js",
   "scripts": {
