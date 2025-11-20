@@ -21,7 +21,7 @@
 
 ## 🚀 How to Use (使用指南)
 
-1.  **Download (下载)**: Download the latest installer from [Releases](https://github.com/yuebai777/RefFlow/releases/tag/v1.0.0).
+1.  **Download (下载)**: Download the latest installer from [Releases](https://github.com/yuebai777/RefFlow/releases).
       * 从 Releases 页面下载最新安装包。
 2.  **Install (安装)**: Install and run RefFlow.
       * 安装并运行 RefFlow。
