@@ -6,11 +6,14 @@
 
 ## ✨ Features (功能特性)
 
-  * **Offline First (离线优先)**: Works completely without internet connection.
+  * **Offline First (离线优先)**: 
+	  * Works completely without internet connection.
       * 无需联网，随时随地开启练习。
-  * **Customizable Timer (自定义计时)**: upports **"Class Mode"** (fully customizable stages, e.g., Stage 1: 10 images for 5 mins each; Stage 2: 20 images for 10 mins each) or **"Fixed Duration"** mode.
+  * **Customizable Timer (自定义计时)**: 
+	  * upports **"Class Mode"** (fully customizable stages, e.g., Stage 1: 10 images for 5 mins each; Stage 2: 20 images for 10 mins each) or **"Fixed Duration"** mode.
       * 支持“课堂模式”（自由添加各种自定义内容，如阶段1：五分钟一张共计十张、阶段2:十分钟一张共计20张......）或“固定时长”模式。
-  * **Smart Flip (智能翻转)**: Random horizontal flipping to train your observation.
+  * **Smart Flip (智能翻转)**: 
+	  * Random horizontal flipping to train your observation.
       * 随机水平翻转图片，打破惯性思维，训练观察力。
   * **Filters (图像滤镜)**: Grayscale mode for value study.
       * 一键黑白模式，帮助你专注于明暗与素描关系。
@@ -18,7 +21,7 @@
 
 ## 🚀 How to Use (使用指南)
 
-1.  **Download (下载)**: Download the latest installer from [Releases](https://www.google.com/search?q=%E8%BF%99%E9%87%8C%E4%BB%A5%E5%90%8E%E5%A1%AB%E4%BD%A0%E7%9A%84Releases%E9%93%BE%E6%8E%A5).
+1.  **Download (下载)**: Download the latest installer from [Releases](https://github.com/yuebai777/RefFlow/releases/tag/v1.0.0)).
       * 从 Releases 页面下载最新安装包。
 2.  **Install (安装)**: Install and run RefFlow.
       * 安装并运行 RefFlow。
