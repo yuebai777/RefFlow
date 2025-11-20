@@ -5,13 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RefFlow</title>
     
-    <script src="./libs/tailwindcss.js"></script>
-    
-    <script src="./libs/react.js"></script>
-    <script src="./libs/react-dom.js"></script>
-    
-    <script src="./libs/babel.js"></script>
-
     <style>
         body { margin: 0; background-color: #09090b; overflow: hidden; color: white; user-select: none; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
         /* 隐藏滚动条 */
@@ -30,10 +23,47 @@
         
         .animate-pulse { animation: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .8; transform: scale(1.05); } }
+        
+        /* 加载动画的关键帧 */
+        @keyframes loader-spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
-    <div id="root"></div>
+    <div id="root">
+        <div style="
+            position: fixed; 
+            top: 0; left: 0; width: 100%; height: 100%; 
+            background-color: #09090b; 
+            display: flex; 
+            flex-direction: column;
+            justify-content: center; 
+            align-items: center; 
+            z-index: 9999;
+            font-family: sans-serif;
+            color: #71717a;
+        ">
+            <div style="
+                width: 50px; 
+                height: 50px; 
+                border: 4px solid #27272a; 
+                border-top-color: #3b82f6; 
+                border-radius: 50%; 
+                animation: loader-spin 1s linear infinite;
+                margin-bottom: 20px;
+            "></div>
+            <div style="font-size: 14px; letter-spacing: 1px; opacity: 0.8;">
+                LOADING REFFLOW...
+            </div>
+        </div>
+        </div>
+
+    <script src="./libs/tailwindcss.js"></script>
+    <script src="./libs/react.js"></script>
+    <script src="./libs/react-dom.js"></script>
+    <script src="./libs/babel.js"></script>
 
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback, useMemo } = React;
@@ -78,7 +108,7 @@
         const ChevronRight = (p) => <IconBase {...p}><path d="m9 18 6-6-6-6"></path></IconBase>;
 
         // -----------------------------------------------------------------------------
-        // 缩略图组件 (使用 React.memo 优化渲染，添加 lazy loading)
+        // 缩略图组件
         // -----------------------------------------------------------------------------
         const ThumbnailItem = React.memo(({ file, index, onRemove, onPreview, onDragStart, onDrop, onDragOver }) => {
             const [url, setUrl] = useState(null);
@@ -138,7 +168,7 @@
         // -----------------------------------------------------------------------------
         // 主逻辑组件
         // -----------------------------------------------------------------------------
-        function RefFlowr() {
+        function LocalRefTrainer() {
             const [globalFiles, setGlobalFiles] = useState([]); 
             const [globalFolderName, setGlobalFolderName] = useState(null); 
             const [sessionImages, setSessionImages] = useState([]); 
@@ -162,13 +192,12 @@
             ];
 
             const [classStages, setClassStages] = useState(defaultClassStages);
-            // 【更新 1】 settings 增加 randomFlip 默认值
             const [settings, setSettings] = useState({ 
                 duration: 60, 
                 isClassMode: false, 
                 grayscale: false, 
                 flipHorizontal: false, 
-                randomFlip: false, // 新增：随机翻转
+                randomFlip: false, 
                 fitMode: 'contain', 
                 count: 0, 
                 enableStageAlert: true, 
@@ -184,7 +213,6 @@
             const [nextStageIndex, setNextStageIndex] = useState(null);
             const [breakTimer, setBreakTimer] = useState(0);
             
-            // 【更新 2】 新增状态：当前图片是否被随机翻转
             const [currentRandomFlip, setCurrentRandomFlip] = useState(false);
 
             const folderInputRef = useRef(null);
@@ -334,8 +362,6 @@
                 return { colorClass, animClass };
             };
 
-            // Effects
-            // 【更新 3】 监听 currentIndex 变化，如果开启了随机翻转，则计算
             useEffect(() => {
                 if (settings.randomFlip) {
                     setCurrentRandomFlip(Math.random() > 0.5);
@@ -370,10 +396,8 @@
                 return files.slice(start, end);
             };
 
-            // 【更新 4】 计算最终显示的图片是否需要翻转（固定翻转 XOR 随机翻转）
             const isEffectiveFlip = settings.flipHorizontal ? !currentRandomFlip : currentRandomFlip;
 
-            // 【更新 5】 修复滤镜逻辑：将 blur 和 grayscale 统一在这里计算
             const getImageFilterStyle = () => {
                 let filters = [];
                 if (appState === 'stageBreak') filters.push('blur(20px) brightness(0.3)');
@@ -532,7 +556,7 @@
                         
                         {/* Main Layout Content */}
                         <div className="max-w-5xl w-full space-y-8">
-                            <div className="text-center space-y-1 mb-4"><h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-500 tracking-tighter flex items-center justify-center gap-4 pb-2"><ImageIcon size={48} className="text-blue-500" /> RefFlow</h1><p className="text-zinc-500 font-medium">完全本地化速写训练工具</p></div>
+                            <div className="text-center space-y-1 mb-4"><h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-500 tracking-tighter flex items-center justify-center gap-4 pb-2"><ImageIcon size={48} className="text-blue-500" /> RefFlow</h1><p className="text-zinc-500 font-medium">完全本地化的速写训练工具</p></div>
                             
                             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                                 {/* Left Column */}
@@ -603,7 +627,6 @@
                                         <div>
                                             <div className="flex items-center gap-2 mb-4 text-blue-400 font-bold tracking-wide uppercase text-xs"><Monitor size={14} /> 显示选项</div>
                                             <div className="grid grid-cols-2 gap-4">
-                                                {/* 【更新 6】 显示选项 UI：添加随机水平翻转 */}
                                                 <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-300"><input type="checkbox" className="accent-blue-500" checked={settings.grayscale} onChange={(e) => setSettings({...settings, grayscale: e.target.checked})} /> 黑白模式</label>
                                                 <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-300"><input type="checkbox" className="accent-blue-500" checked={settings.flipHorizontal} onChange={(e) => setSettings({...settings, flipHorizontal: e.target.checked})} /> 固定翻转</label>
                                                 <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-300"><input type="checkbox" className="accent-blue-500" checked={settings.randomFlip} onChange={(e) => setSettings({...settings, randomFlip: e.target.checked})} /> 随机翻转</label>
@@ -673,7 +696,6 @@
                    <div className="flex-1 flex items-center justify-center w-full h-full relative">
                       {currentImageUrl && <img 
                           src={currentImageUrl} 
-                          // 【更新 7】 应用新的翻转逻辑 (isEffectiveFlip) 和内联样式 (getImageFilterStyle)
                           className={`transition-opacity duration-500 max-w-full max-h-full ${settings.fitMode === 'cover' ? 'w-full h-full object-cover' : 'w-full h-full object-contain'} ${isEffectiveFlip ? '-scale-x-100' : ''}`} 
                           style={{filter: getImageFilterStyle()}} 
                       />}
@@ -690,7 +712,7 @@
         }
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<RefFlow />);
+        root.render(<LocalRefTrainer />);
     </script>
 </body>
 </html>
