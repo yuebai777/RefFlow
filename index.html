@@ -111,24 +111,75 @@
         const ChevronRight = (p) => <IconBase {...p}><path d="m9 18 6-6-6-6"></path></IconBase>;
 
         // -----------------------------------------------------------------------------
-        // 缩略图组件
+        // 工具函数：生成低质量缩略图 (解决卡顿的核心)
+        // -----------------------------------------------------------------------------
+        const createThumbnail = (file) => {
+            return new Promise((resolve) => {
+                // 1. 创建一个临时的原图链接
+                const sourceUrl = URL.createObjectURL(file);
+                const img = new Image();
+                
+                img.onload = () => {
+                    // 2. 计算缩放比例，限制最大宽高为 240px
+                    const maxDim = 240;
+                    let w = img.width;
+                    let h = img.height;
+                    
+                    if (w > h) {
+                        if (w > maxDim) { h *= maxDim / w; w = maxDim; }
+                    } else {
+                        if (h > maxDim) { w *= maxDim / h; h = maxDim; }
+                    }
+
+                    // 3. 在 Canvas 上绘制压缩后的小图
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, w, h);
+                    
+                    // 4. 导出为低质量 JPEG (0.6 = 60% 质量)
+                    canvas.toBlob((blob) => {
+                        const thumbUrl = URL.createObjectURL(blob);
+                        resolve(thumbUrl);
+                        // 清理内存：释放原图的大链接
+                        URL.revokeObjectURL(sourceUrl);
+                    }, 'image/jpeg', 0.6); 
+                };
+
+                // 处理加载错误，防止死循环
+                img.onerror = () => {
+                    resolve(sourceUrl); // 如果压缩失败，就直接用原图
+                };
+
+                img.src = sourceUrl;
+            });
+        };
+
+// -----------------------------------------------------------------------------
+        // 缩略图组件 (升级版：自动压缩 + 渐显效果)
         // -----------------------------------------------------------------------------
         const ThumbnailItem = React.memo(({ file, index, onRemove, onPreview, onDragStart, onDrop, onDragOver }) => {
-            const [url, setUrl] = useState(null);
+            const [thumbUrl, setThumbUrl] = useState(null);
+            const [isLoaded, setIsLoaded] = useState(false);
             
             useEffect(() => {
                 let active = true;
-                const timer = setTimeout(() => {
+                
+                // 异步生成缩略图
+                createThumbnail(file).then(url => {
                     if (active) {
-                        const objectUrl = URL.createObjectURL(file);
-                        setUrl(objectUrl);
+                        setThumbUrl(url);
+                    } else {
+                        // 如果组件已经卸载，就直接释放这个 URL
+                        URL.revokeObjectURL(url);
                     }
-                }, 10); 
+                });
 
                 return () => {
                     active = false;
-                    clearTimeout(timer);
-                    if (url) URL.revokeObjectURL(url);
+                    // 组件卸载时，清理缩略图占用的内存
+                    if (thumbUrl) URL.revokeObjectURL(thumbUrl);
                 };
             }, [file]);
 
@@ -140,15 +191,16 @@
                     onDrop={(e) => onDrop(e, index)}
                     className="relative group aspect-square bg-zinc-900 rounded-lg border border-zinc-800 overflow-hidden cursor-move hover:border-blue-500/50 transition-colors"
                 >
-                    {url ? (
+                    {thumbUrl ? (
                         <img 
-                            src={url} 
+                            src={thumbUrl} 
                             alt="thumb" 
-                            loading="lazy" 
-                            decoding="async" 
-                            className="w-full h-full object-cover pointer-events-none select-none" 
+                            // 图片加载完成后才显示，避免闪烁
+                            onLoad={() => setIsLoaded(true)}
+                            className={`w-full h-full object-cover pointer-events-none select-none transition-opacity duration-300 ${isLoaded ? 'opacity-100' : 'opacity-0'}`} 
                         />
                     ) : (
+                        // 加载中的占位符
                         <div className="w-full h-full flex items-center justify-center text-zinc-700">
                            <div className="animate-pulse bg-zinc-800 w-full h-full"></div>
                         </div>
@@ -160,6 +212,7 @@
                             <button onClick={(e) => { e.stopPropagation(); onRemove(index); }} className="bg-red-900/80 p-1 rounded text-red-200 hover:bg-red-600"><X size={14}/></button>
                         </div>
                         <div className="flex justify-center">
+                            {/* 预览时传递原始 file，保证查看大图 */}
                             <button onClick={(e) => { e.stopPropagation(); onPreview(file); }} className="bg-blue-600/80 px-2 py-1 rounded text-xs text-white flex items-center gap-1 hover:bg-blue-500"><Eye size={12}/> 预览</button>
                         </div>
                         <div className="text-[10px] text-zinc-400 truncate text-center px-1 bg-black/40 rounded">{file.name}</div>
@@ -167,6 +220,8 @@
                 </div>
             );
         });
+
+            
 
         // -----------------------------------------------------------------------------
         // 主逻辑组件
