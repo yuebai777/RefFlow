@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     close: () => ipcRenderer.send('window-close'),
     forceClose: () => ipcRenderer.send('window-force-close'), // 新增
     setAlwaysOnTop: (isTop) => ipcRenderer.send('window-top', isTop),
-    
+    showItemInFolder: (filePath) => ipcRenderer.send('show-item-in-folder', filePath),
     // 新增：监听关闭请求
     onCloseRequest: (callback) => {
         // 这里的 callback 会被多次注册，最好在 React useEffect 里清理

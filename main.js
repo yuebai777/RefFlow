@@ -1,5 +1,5 @@
-const { app, BrowserWindow, ipcMain, protocol } = require('electron');
-const path = require('path');
+const { app, BrowserWindow, ipcMain, protocol, shell } = require('electron');
+const path = require('path')
 
 function createWindow() {
     const win = new BrowserWindow({
@@ -67,4 +67,11 @@ ipcMain.on('window-force-close', () => {
 ipcMain.on('window-top', (event, isTop) => {
     const win = BrowserWindow.getFocusedWindow();
     if (win) win.setAlwaysOnTop(isTop);
+});
+
+ipcMain.on('show-item-in-folder', (event, filePath) => {
+    if (filePath) {
+        // 调用 Electron 原生 shell 打开文件所在位置
+        shell.showItemInFolder(filePath);
+    }
 });
