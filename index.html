@@ -133,16 +133,46 @@
 
         const CustomTitleBar = ({ appState, onClose }) => {
             const [isPinned, setIsPinned] = useState(false);
-            const [isHoveringTop, setIsHoveringTop] = useState(false);
+            const [mouseNearTop, setMouseNearTop] = useState(false);
+            const [mouseOnBar, setMouseOnBar] = useState(false);
+            
             useEffect(() => {
-                const handleMouseMove = (e) => setIsHoveringTop(e.clientY < 60);
+                let timer = null;
+                const handleMouseMove = (e) => {
+                    if (e.clientY < 60) {
+                        setMouseNearTop(true);
+                        if (timer) {
+                            clearTimeout(timer);
+                            timer = null; // CRITICAL: Reset timer so next "out" triggers logic
+                        }
+                    } else {
+                        if (!timer) {
+                            timer = setTimeout(() => {
+                                setMouseNearTop(false);
+                                timer = null; // CRITICAL: Reset timer so next "out" triggers logic
+                            }, 300);
+                        }
+                    }
+                };
                 window.addEventListener('mousemove', handleMouseMove);
-                return () => window.removeEventListener('mousemove', handleMouseMove);
+                return () => {
+                    window.removeEventListener('mousemove', handleMouseMove);
+                    if (timer) clearTimeout(timer);
+                };
             }, []);
+
             const togglePin = () => { const newState = !isPinned; setIsPinned(newState); if (window.electronAPI) window.electronAPI.setAlwaysOnTop(newState); };
-            const show = isHoveringTop || (appState === 'setup' || appState === 'finished');
+            
+            // 显示条件：鼠标在顶部区域 OR 鼠标正悬停在标题栏上 OR 在设置/完成界面
+            // mouseOnBar 是关键：只要你正按着标题栏（拖拽中），它就不会因为鼠标移出顶部区域而消失
+            const show = mouseNearTop || mouseOnBar || appState === 'setup' || appState === 'finished';
+            
             return (
-                <div className={`fixed top-0 left-0 w-full h-10 z-[9999] flex justify-end items-center transition-all duration-300 ease-in-out border-b border-white/10 bg-black/90 backdrop-blur-md ${show ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'}`}>
+                <div 
+                    onMouseEnter={() => setMouseOnBar(true)}
+                    onMouseLeave={() => setMouseOnBar(false)}
+                    className={`fixed top-0 left-0 w-full h-10 z-[9999] flex justify-end items-center transition-all duration-300 ease-in-out border-b border-white/10 bg-black/90 backdrop-blur-md ${show ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'}`}
+                >
                     <div style={{WebkitAppRegion: 'drag'}} className="absolute inset-0 w-full h-full" />
                     <div className="relative z-10 flex items-center h-full mr-3 gap-2" style={{WebkitAppRegion: 'no-drag'}}>
                         <button onClick={togglePin} className={`p-1.5 rounded hover:bg-zinc-700 transition-colors ${isPinned ? 'text-blue-400 bg-blue-500/10' : 'text-zinc-400'}`} title={isPinned ? "取消置顶" : "窗口置顶"}><Pin size={16} fill={isPinned ? "currentColor" : "none"} /></button>
@@ -526,8 +556,8 @@
             const formatTime = (sec) => { const m = Math.floor(sec / 60); const s = sec % 60; return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`; };
             const filterImageFiles = (list) => Array.from(list).filter(f => f.type.startsWith('image/'));
             const getFolderName = (files) => { if(!files||files.length===0)return null; const p = files[0].webkitRelativePath; return p ? p.split('/')[0] : "Selected Files"; };
-            const playAlertSound = () => { try { const AudioContext = window.AudioContext || window.webkitAudioContext; if (!AudioContext) return; const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); osc.connect(gain); gain.connect(ctx.destination); osc.type = 'sine'; osc.frequency.setValueAtTime(523.25, ctx.currentTime); osc.frequency.exponentialRampToValueAtTime(1046.5, ctx.currentTime + 0.1); gain.gain.setValueAtTime(0.1, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.8); osc.start(); osc.stop(ctx.currentTime + 0.8); } catch(e){} };
-            const playTickSound = () => { try { const AudioContext = window.AudioContext || window.webkitAudioContext; if (!AudioContext) return; const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); osc.connect(gain); gain.connect(ctx.destination); osc.type = 'sine'; osc.frequency.setValueAtTime(800, ctx.currentTime); gain.gain.setValueAtTime(0.05, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.1); osc.start(); osc.stop(ctx.currentTime + 0.1); } catch(e){} };
+            const playAlertSound = () => { try { const AudioContext = window.AudioContext || window.webkitAudioContext; if (!AudioContext) return; const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); osc.connect(gain); gain.connect(ctx.destination); osc.type = 'sine'; osc.frequency.setValueAtTime(523.25, ctx.currentTime); osc.frequency.exponentialRampToValueAtTime(1046.5, ctx.currentTime + 0.1); gain.gain.setValueAtTime(0.2, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.8); osc.start(); osc.stop(ctx.currentTime + 0.8); } catch(e){} };
+            const playTickSound = () => { try { const AudioContext = window.AudioContext || window.webkitAudioContext; if (!AudioContext) return; const ctx = new AudioContext(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); osc.connect(gain); gain.connect(ctx.destination); osc.type = 'sine'; osc.frequency.setValueAtTime(800, ctx.currentTime); gain.gain.setValueAtTime(0.1, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.1); osc.start(); osc.stop(ctx.currentTime + 0.1); } catch(e){} };
 
             const addFilesToGlobal = (newFiles, sourceName) => { setGlobalFolderName(prev => prev === null ? sourceName : "Mixed Sources"); setGlobalFiles(prev => { const combined = [...prev]; newFiles.forEach(img => { if (!combined.some(f => f.name === img.name && f.size === img.size)) combined.push(img); }); return combined; }); };
             const handleFolderSelect = (e) => { const files = filterImageFiles(e.target.files); if(files.length===0){alert("未找到图片");return;} addFilesToGlobal(files, getFolderName(e.target.files)); };
@@ -723,7 +753,7 @@
                                                     </div>
                                                 </div>
                                                 <div className={`transition-all duration-300 ${!settings.isClassMode ? 'opacity-50' : 'opacity-100'}`}>
-                                                    <div className="flex justify-between items-center mb-3"><label className="flex items-center gap-3 cursor-pointer"><div className={`w-5 h-5 rounded-full border flex items-center justify-center ${settings.isClassMode ? 'border-blue-500' : 'border-zinc-600'}`}>{settings.isClassMode && <div className="w-2.5 h-2.5 bg-blue-500 rounded-full" />}</div><input type="radio" className="hidden" checked={settings.isClassMode} onChange={() => setSettings({...settings, isClassMode: true})} /><span className={`font-medium ${settings.isClassMode ? 'text-white' : 'text-zinc-400'}`}>课程模式</span></label><button onClick={() => { setSettings({...settings, isClassMode: true}); setShowClassEditor(true); }} className={`px-3 py-1.5 rounded-full border text-xs font-medium flex items-center gap-1.5 transition-colors ${settings.isClassMode ? 'border-blue-500 text-blue-400 bg-blue-500/10' : 'border-zinc-700 text-zinc-500'}`}><Edit2 size={12} /> 编辑流程</button></div>
+                                                    <div className="flex justify-between items-center mb-3"><label className="flex items-center gap-3 cursor-pointer"><div className={`w-5 h-5 rounded-full border flex items-center justify-center ${settings.isClassMode ? 'border-blue-500' : 'border-zinc-600'}`}>{!settings.isClassMode && <div className="w-2.5 h-2.5 bg-blue-500 rounded-full" />}</div><input type="radio" className="hidden" checked={!settings.isClassMode} onChange={() => setSettings({...settings, isClassMode: false})} /><span className={`font-medium ${!settings.isClassMode ? 'text-white' : 'text-zinc-400'}`}>固定时间模式</span></label><button onClick={() => { setSettings({...settings, isClassMode: true}); setShowClassEditor(true); }} className={`px-3 py-1.5 rounded-full border text-xs font-medium flex items-center gap-1.5 transition-colors ${settings.isClassMode ? 'border-blue-500 text-blue-400 bg-blue-500/10' : 'border-zinc-700 text-zinc-500'}`}><Edit2 size={12} /> 编辑流程</button></div>
                                                     {settings.isClassMode && (<div className="pl-8 space-y-3"><div className="flex gap-2 overflow-x-auto pb-2">{classStages.map((s, i) => (<div key={i} className="flex-shrink-0 bg-zinc-950 border border-zinc-800 rounded px-3 py-2 min-w-[100px]"><div className="text-[10px] text-zinc-500 uppercase font-bold">Stage {i+1}</div><div className="text-sm font-mono text-zinc-300">{s.duration < 60 ? s.duration+'s' : s.duration/60+'m'} <span className="text-zinc-600">x</span> {s.count}</div></div>))}</div><div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800/50 flex items-center gap-6"><label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-400 hover:text-zinc-200"><input type="checkbox" className="accent-blue-500" checked={settings.enableStageAlert} onChange={(e) => setSettings({...settings, enableStageAlert: e.target.checked})} /><span>阶段间歇提示</span></label>{settings.enableStageAlert && (<div className="flex items-center gap-3 border-l border-zinc-800 pl-6"><label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-400"><input type="checkbox" className="accent-blue-500" checked={settings.autoContinue} onChange={(e) => setSettings({...settings, autoContinue: e.target.checked})} /><span>自动继续</span></label>{settings.autoContinue && <div className="flex items-center gap-1"><input type="number" min="1" max="60" value={settings.breakDuration} onChange={(e) => setSettings({...settings, breakDuration: parseInt(e.target.value)||5})} className="w-10 bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 text-xs text-center outline-none" /><span className="text-[10px] text-zinc-600">秒</span></div>}</div>)}</div></div>)}
                                                 </div>
                                             </div>
