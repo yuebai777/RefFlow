@@ -322,6 +322,7 @@
             const [showLibrarySelector, setShowLibrarySelector] = useState(false); 
             const [managingStageIndex, setManagingStageIndex] = useState(null); 
             const [previewFile, setPreviewFile] = useState(null); 
+            const [previewUrl, setPreviewUrl] = useState(null);
             const [errorInfo, setErrorInfo] = useState(null);
             const [managerPage, setManagerPage] = useState(1);
             const [selectorPage, setSelectorPage] = useState(1);
@@ -395,14 +396,37 @@
             const isDraggingRef = useRef(false);
             const dragStartPosRef = useRef({ x: 0, y: 0 });
 
+            // 监听 previewFile 变化，重置状态并生成稳定的 URL
             useEffect(() => {
                 if (previewFile) {
+                    // 1. 重置变换参数
                     setPreviewScale(1);
                     transformRef.current = { x: 0, y: 0, scale: 1 };
                     if (previewImgRef.current) {
                         previewImgRef.current.style.transform = `translate3d(0px, 0px, 0) scale(1)`;
                         previewImgRef.current.style.cursor = 'grab';
+                        previewImgRef.current.style.transition = 'none'; // 防止打开瞬间有动画残留
                     }
+
+                    // 2. 生成稳定的 URL (关键修复：防止因组件重渲染导致的图片闪烁)
+                    let url = null;
+                    if (previewFile.path) {
+                        url = `refflow://${previewFile.path}`;
+                    } else if (previewFile instanceof File) {
+                        url = URL.createObjectURL(previewFile);
+                    } else if (previewFile.thumbUrl) {
+                        url = previewFile.thumbUrl;
+                    }
+                    setPreviewUrl(url);
+
+                    // 3. 清理函数：关闭预览或切换图片时，释放旧的 Blob URL 内存
+                    return () => {
+                        if (url && url.startsWith('blob:')) {
+                            URL.revokeObjectURL(url);
+                        }
+                    };
+                } else {
+                    setPreviewUrl(null);
                 }
             }, [previewFile]);
 
@@ -917,33 +941,58 @@
                 setContextMenu({ ...contextMenu, visible: false });
             };
 
+            // --- 高性能预览交互逻辑 (动静分离优化) ---
             const handlePreviewWheel = (e) => {
                 e.stopPropagation();
                 const delta = e.deltaY > 0 ? 0.9 : 1.1;
                 const newScale = Math.max(0.1, Math.min(20, transformRef.current.scale * delta));
+                
                 transformRef.current.scale = newScale;
                 setPreviewScale(newScale);
+                
+                // ⚡ 优化：缩放时开启短过渡，保证平滑
+                if (previewImgRef.current) {
+                    previewImgRef.current.style.transition = 'transform 0.1s ease-out';
+                }
                 applyTransform();
             };
 
             const handlePreviewMouseDown = (e) => {
-                e.preventDefault(); e.stopPropagation();
+                e.preventDefault();
+                e.stopPropagation();
                 isDraggingRef.current = true;
-                if (previewImgRef.current) previewImgRef.current.style.cursor = 'grabbing';
-                dragStartPosRef.current = { x: e.clientX - transformRef.current.x, y: e.clientY - transformRef.current.y };
+                
+                if (previewImgRef.current) {
+                    previewImgRef.current.style.cursor = 'grabbing';
+                    // ⚡ 核心优化：拖拽开始时，强制关闭过渡动画！
+                    // 这能消除"拖泥带水"的感觉，让图片紧跟鼠标，解决卡顿
+                    previewImgRef.current.style.transition = 'none';
+                }
+                
+                dragStartPosRef.current = { 
+                    x: e.clientX - transformRef.current.x, 
+                    y: e.clientY - transformRef.current.y 
+                };
             };
 
             const handlePreviewMouseMove = (e) => {
                 if (!isDraggingRef.current) return;
-                e.preventDefault(); e.stopPropagation();
+                e.preventDefault();
+                e.stopPropagation();
+                
                 transformRef.current.x = e.clientX - dragStartPosRef.current.x;
                 transformRef.current.y = e.clientY - dragStartPosRef.current.y;
+                
                 requestAnimationFrame(applyTransform);
             };
 
             const handlePreviewMouseUp = () => {
                 isDraggingRef.current = false;
-                if (previewImgRef.current) previewImgRef.current.style.cursor = 'grab';
+                if (previewImgRef.current) {
+                    previewImgRef.current.style.cursor = 'grab';
+                    // 拖拽结束后，恢复过渡属性（可选，为了后续可能的平滑复位）
+                    previewImgRef.current.style.transition = 'transform 0.1s ease-out';
+                }
             };
 
             const removePreviewItem = (idx) => { setPendingSessionQueue(prev => prev.filter((_, i) => i !== idx)); };
@@ -1094,11 +1143,12 @@
                             >
                                 <img 
                                     ref={previewImgRef}
-                                    src={getSafeImageUrl(previewFile)} 
+                                    src={previewUrl}  /* ✅ 修改：这里改用 previewUrl */
                                     alt="preview" 
                                     onMouseDown={handlePreviewMouseDown}
                                     onClick={(e) => e.stopPropagation()}
-                                    className="max-w-none shadow-2xl origin-center will-change-transform transition-transform duration-75"
+                                    className="max-w-none shadow-2xl origin-center will-change-transform"
+                                    decoding="async"
                                     style={{
                                         cursor: 'grab',
                                         maxWidth: '90vw',
@@ -1440,7 +1490,7 @@
                         >
                             <img 
                                 ref={previewImgRef}
-                                src={getSafeImageUrl(previewFile)} 
+                                src={previewUrl}  /* ✅ 修改：这里改用 previewUrl */
                                 alt="preview" 
                                 onMouseDown={handlePreviewMouseDown}
                                 onClick={(e) => e.stopPropagation()}
