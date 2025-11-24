@@ -92,7 +92,7 @@
             };
         `;
 
-        // --- IndexedDB 帮助类 ---
+        // --- IndexedDB 帮助类 (用于持久化保存缩略图) ---
         const dbPromise = (async () => {
             return new Promise((resolve, reject) => {
                 const request = indexedDB.open('RefFlowThumbnails', 1);
@@ -106,8 +106,31 @@
                 request.onerror = (event) => reject(event.target.error);
             });
         })();
+        
+        // 缓存写入辅助函数
+        const saveToDb = async (id, blob) => {
+            try {
+                const db = await dbPromise;
+                const tx = db.transaction('thumbs', 'readwrite');
+                tx.objectStore('thumbs').put(blob, id);
+            } catch (e) { console.error("DB Save Error", e); }
+        };
+
+        // 缓存读取辅助函数
+        const getFromDb = async (id) => {
+            try {
+                const db = await dbPromise;
+                return new Promise((resolve) => {
+                    const tx = db.transaction('thumbs', 'readonly');
+                    const req = tx.objectStore('thumbs').get(id);
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => resolve(null);
+                });
+            } catch (e) { return null; }
+        };
 
         // 图标组件
+        const Award = (p) => <IconBase {...p}><circle cx="12" cy="8" r="7"></circle><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"></polyline></IconBase>;
         const IconBase = ({ children, size = 24, className = "" }) => (<svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{children}</svg>);
         const RotateCcw = (p) => <IconBase {...p}><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></IconBase>;
         const AlertCircle = (p) => <IconBase {...p}><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></IconBase>;
@@ -157,27 +180,65 @@
 
         const copyImageToClipboard = async (file) => {
             try {
-                let blob;
-                if (file instanceof File) { blob = file; } 
-                else if (file.path) { const response = await fetch(`refflow://${file.path}`); blob = await response.blob(); } 
-                else { throw new Error("无法获取图片数据"); }
+                let url;
+                // 1. 获取图片链接 (修复：直接使用协议链接，不使用 fetch)
+                if (file instanceof File) {
+                    url = URL.createObjectURL(file);
+                } else if (file.path) {
+                    url = `refflow://${file.path.replace(/\\/g, '/')}`;
+                } else if (file.thumbUrl) {
+                    url = file.thumbUrl;
+                } else {
+                    throw new Error("无法找到图片源");
+                }
                 
+                // 2. 加载图片到 Image 对象
                 const img = new Image();
-                const url = URL.createObjectURL(blob);
-                await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = url; });
+                // 设置 crossOrigin 有助于避免某些情况下的“画布污染”报错，
+                // 虽然 refflow 协议通常被视为同源，但加了更保险。
+                img.crossOrigin = "Anonymous"; 
+                img.src = url;
                 
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = () => reject(new Error("图片加载超时或失败"));
+                });
+                
+                // 3. 绘制到 Canvas
                 const canvas = document.createElement('canvas');
-                canvas.width = img.width; canvas.height = img.height;
+                // 关键：使用 naturalWidth 保证复制的是原图分辨率，而不是屏幕上的显示大小
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(img, 0, 0);
                 
+                // 4. 导出为 Blob 并写入剪贴板
                 canvas.toBlob(async (pngBlob) => {
-                    try { await navigator.clipboard.write([new ClipboardItem({ [pngBlob.type]: pngBlob })]); } 
-                    catch (err) { console.error('复制失败', err); alert('复制失败: ' + err.message); }
-                    URL.revokeObjectURL(url);
-                }, 'image/png');
+                    try {
+                        if (!pngBlob) throw new Error("Canvas 转换失败");
+                        
+                        await navigator.clipboard.write([
+                            new ClipboardItem({ 'image/png': pngBlob })
+                        ]);
+                        
+                        // 可选：在这里添加一个简单的 UI 反馈，比如 console.log
+                        console.log("Image copied to clipboard!");
+                        
+                    } catch (err) {
+                        console.error('复制写入失败', err);
+                        alert('复制失败: ' + err.message);
+                    } finally {
+                        // 如果是我们临时创建的 Blob URL，用完记得释放
+                        if (file instanceof File) {
+                            URL.revokeObjectURL(url);
+                        }
+                    }
+                }, 'image/png'); // 剪贴板通常推荐使用 PNG 格式
                 
-            } catch (err) { console.error('获取图片失败', err); alert('复制失败: 无法读取图片数据'); }
+            } catch (err) {
+                console.error('复制过程出错', err);
+                alert('复制失败: ' + err.message);
+            }
         };
 
         const getSafeImageUrl = (file) => {
@@ -192,7 +253,7 @@
             return null;
         };
 
-        // 优化后的缩略图组件
+        // 优化后的缩略图组件 (支持双击预览)
         const ThumbnailItem = React.memo(({ file, thumbUrl, index, isDrawn, isSelected, onClick, onToggleDrawn, onRemove, onPreview, onDragStart, onDrop, onDragOver, showAddButton, onAdd }) => {
             const src = thumbUrl || file.thumbUrl;
             return (
@@ -202,6 +263,8 @@
                     onDragOver={(e) => !showAddButton && onDragOver(e, index)} 
                     onDrop={(e) => !showAddButton && onDrop(e, index)} 
                     onClick={onClick}
+                    // ✅ 新增：双击直接预览
+                    onDoubleClick={(e) => { e.stopPropagation(); onPreview && onPreview(file); }}
                     style={{ transform: 'translateZ(0)' }}
                     className={`relative group aspect-square rounded-lg border overflow-hidden cursor-pointer ${isSelected ? 'border-blue-500 ring-2 ring-blue-500/30 bg-blue-900/20 z-10 scale-95' : isDrawn ? 'border-green-500/50 bg-zinc-900' : 'border-zinc-800 bg-zinc-900 hover:border-zinc-600'}`}
                 >
@@ -211,6 +274,7 @@
                         <div className="w-full h-full flex items-center justify-center text-zinc-700"><div className="animate-pulse"><ImageIcon size={24} className="opacity-20"/></div></div>
                     )}
                     
+                    {/* 添加模式 (主页列表) */}
                     {showAddButton && (
                         <div className="absolute inset-0 bg-black/40 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-3">
                              <button onClick={(e) => { e.stopPropagation(); onPreview(file); }} className="bg-zinc-800 hover:bg-blue-600 text-white p-2 rounded-full shadow-lg transform scale-90 group-hover:scale-110 transition-all" title="预览"><Eye size={20}/></button>
@@ -218,19 +282,25 @@
                         </div>
                     )}
 
+                    {/* 选中标记 */}
                     {!showAddButton && isSelected && (<div className="absolute top-1 left-1 z-20 bg-blue-600 text-white rounded-full p-0.5 shadow-lg animate-in zoom-in duration-200"><IconBase size={12}><polyline points="20 6 9 17 4 12"></polyline></IconBase></div>)}
                     
-                    {!showAddButton && (
+                    {/* 已画/未画 切换按钮 (右下角) */}
+                    {onToggleDrawn && (
                         <div className="absolute bottom-1 right-1 z-10">
-                            <button onClick={(e) => { e.stopPropagation(); onToggleDrawn(file); }} className={`p-1 rounded-full transition-all ${isDrawn ? 'text-green-500 bg-black/50' : 'text-zinc-600 bg-black/20 opacity-0 group-hover:opacity-100 hover:text-zinc-200'}`}>{isDrawn ? <CheckCircle size={16} fill="currentColor" className="text-green-500 bg-green-900/20 rounded-full"/> : <Circle size={16}/>}</button>
+                            <button onClick={(e) => { e.stopPropagation(); onToggleDrawn(file); }} className={`p-1 rounded-full transition-all ${isDrawn ? 'text-green-500 bg-black/50' : 'text-zinc-600 bg-black/20 opacity-0 group-hover:opacity-100 hover:text-zinc-200'}`} title={isDrawn ? "设为未画" : "设为已画"}>{isDrawn ? <CheckCircle size={16} fill="currentColor" className="text-green-500 bg-green-900/20 rounded-full"/> : <Circle size={16}/>}</button>
                         </div>
                     )}
                     
+                    {/* 悬浮菜单 (预览/移除) */}
                     {!showAddButton && !isSelected && (
                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-between p-2 pointer-events-none will-change-[opacity]">
                             <div className="flex justify-between items-start pointer-events-auto">
                                 <div className="bg-black/50 p-1 rounded text-zinc-400 cursor-grab active:cursor-grabbing"><GripHorizontal size={14}/></div>
-                                <button onClick={(e) => { e.stopPropagation(); onRemove(index); }} className="bg-red-900/80 p-1 rounded text-red-200 hover:bg-red-600 transition-colors" title="移除图片"><X size={14}/></button>
+                                {/* 只有传入 onRemove 时才显示移除按钮 */}
+                                {onRemove && (
+                                    <button onClick={(e) => { e.stopPropagation(); onRemove(index); }} className="bg-red-900/80 p-1 rounded text-red-200 hover:bg-red-600 transition-colors" title="移除图片"><X size={14}/></button>
+                                )}
                             </div>
                             <div className="flex justify-center items-center gap-2 pointer-events-auto">
                                 <button onClick={(e) => { e.stopPropagation(); onPreview(file); }} className="bg-blue-600/80 px-2 py-1 rounded text-xs text-white flex items-center gap-1 hover:bg-blue-500 transition-colors"><Eye size={12}/> 预览</button>
@@ -311,6 +381,11 @@
             );
         });
 
+        const safeJSONParse = (key, fallback) => {
+                try { const saved = localStorage.getItem(key); return saved ? JSON.parse(saved) : fallback; } 
+                catch (e) { console.error(`Error parsing ${key}, resetting.`, e); localStorage.removeItem(key); return fallback; }
+            };
+
         function LocalRefTrainer() {
             const [globalFiles, setGlobalFiles] = useState([]); 
             const [globalFolderName, setGlobalFolderName] = useState(null); 
@@ -318,6 +393,30 @@
             const [appState, setAppState] = useState('setup'); 
             const [showClassEditor, setShowClassEditor] = useState(false);
             const [showListManager, setShowListManager] = useState(false);
+            const [showHistoryManager, setShowHistoryManager] = useState(false);
+            const [historyShowAll, setHistoryShowAll] = useState(false);
+            
+            // ✅ 新增：历史路径缓存 (Key: FileID, Value: FilePath)
+            const [historyPaths, setHistoryPaths] = useState(() => safeJSONParse('refFlow_historyPaths', {}));
+
+            // ✅ 新增：自动同步逻辑。只要库里有文件，就自动记住它们的路径
+            useEffect(() => {
+                let hasChange = false;
+                const newPaths = { ...historyPaths };
+                (globalFiles || []).forEach(f => {
+                    if (f && f.path) {
+                        const id = getFileId(f);
+                        if (!newPaths[id]) { 
+                            newPaths[id] = f.path; 
+                            hasChange = true; 
+                        }
+                    }
+                });
+                if (hasChange) {
+                    setHistoryPaths(newPaths);
+                    localStorage.setItem('refFlow_historyPaths', JSON.stringify(newPaths));
+                }
+            }, [globalFiles]);
             const [showSessionPreview, setShowSessionPreview] = useState(false);
             const [showLibrarySelector, setShowLibrarySelector] = useState(false); 
             const [managingStageIndex, setManagingStageIndex] = useState(null); 
@@ -372,12 +471,6 @@
 
             const ITEMS_PER_PAGE = 60;
             const defaultClassStages = [{ duration: 30, count: 5, stageFiles: [], folderName: null }, { duration: 60, count: 5, stageFiles: [], folderName: null }, { duration: 300, count: 2, stageFiles: [], folderName: null }];
-            
-            const safeJSONParse = (key, fallback) => {
-                try { const saved = localStorage.getItem(key); return saved ? JSON.parse(saved) : fallback; } 
-                catch (e) { console.error(`Error parsing ${key}, resetting.`, e); localStorage.removeItem(key); return fallback; }
-            };
-
             const [classStages, setClassStages] = useState(defaultClassStages);
             const [settings, setSettings] = useState({ duration: 60, isClassMode: false, grayscale: false, flipHorizontal: false, randomFlip: false, fitMode: 'contain', count: 0, enableStageAlert: true, autoContinue: true, breakDuration: 5, playbackOrder: 'random' });
             const [timeUnitMultiplier, setTimeUnitMultiplier] = useState(1);
@@ -438,9 +531,39 @@
             };
 
             const presetNameInputRef = useRef(null);
+
+            // ✅ 新增：在主线程生成本地文件缩略图 (避开 fetch 报错)
+            const generateThumbnailFromPath = async (file) => {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.src = `refflow://${file.path.replace(/\\/g, '/')}`;
+                    img.onload = () => {
+                        const maxDim = 400;
+                        let w = img.width;
+                        let h = img.height;
+                        
+                        // 计算缩放
+                        if (w > h) { if (w > maxDim) { h *= maxDim / w; w = maxDim; } } 
+                        else { if (h > maxDim) { w *= maxDim / h; h = maxDim; } }
+
+                        const canvas = document.createElement('canvas');
+                        canvas.width = w;
+                        canvas.height = h;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, w, h);
+
+                        canvas.toBlob((blob) => {
+                            if (blob) resolve(blob);
+                            else reject(new Error("Canvas blob failed"));
+                        }, 'image/jpeg', 0.6); // 0.6 质量足够做缩略图了
+                    };
+                    img.onerror = (e) => reject(e);
+                });
+            };
             
-            // --- 多线程 Worker 缩略图队列 (智能混合模式) ---
+            // --- 智能缩略图生成队列 (缓存优先 + 混合生成模式) ---
             useEffect(() => {
+                // 初始化 Workers
                 const workerCount = navigator.hardwareConcurrency ? Math.min(navigator.hardwareConcurrency, 4) : 2;
                 const workers = [];
                 const blobURL = URL.createObjectURL(new Blob([WORKER_CODE], { type: 'application/javascript' }));
@@ -451,73 +574,132 @@
                 }
 
                 let isActive = true;
-                let queueIndex = 0;
+                let isProcessingPath = false; // 用于限制主线程并发，防止卡顿
 
-                const schedule = () => {
+                const processQueue = async () => {
                     if (!isActive) return;
-                    const freeWorkerIdx = workers.findIndex(w => !w.busy);
-                    if (freeWorkerIdx === -1) return;
 
-                    let targetFile = null;
+                    // 1. 查找一个需要处理的文件 (没有 thumbUrl 且没有标记为失败)
                     let targetIdx = -1;
+                    let targetFile = null;
 
                     for (let i = 0; i < globalFiles.length; i++) {
-                        const idx = (queueIndex + i) % globalFiles.length;
-                        const f = globalFiles[idx];
-                        
-                        if (f && !f.thumbUrl && !f.isFailed) {
-                            // ✅ 核心修复：恢复小图直读逻辑，并将阈值提升到 1MB
-                            // 现在的浏览器配合 decoding="async" 完全可以流畅渲染 1MB 的图片
-                            // 这让绝大多数网图可以“瞬间显示”，无需等待 Worker 处理
-                            if (f.size < 1 * 1024 * 1024) {
-                                const url = f.path ? `refflow://${f.path}` : URL.createObjectURL(f);
-                                setGlobalFiles(prev => {
-                                    const n = [...prev];
-                                    // 直接原地更新，不用走 Worker 流程
-                                    if (n[idx] && !n[idx].thumbUrl) n[idx].thumbUrl = url;
-                                    return n;
-                                });
-                                continue; // 跳过本次循环，继续找下一个大图
-                            }
-                            
-                            // 只有 > 1MB 的大图才交给 Worker 压缩
-                            targetFile = f; 
-                            targetIdx = idx; 
-                            queueIndex = (idx + 1) % globalFiles.length; 
+                        const f = globalFiles[i];
+                        if (f && !f.thumbUrl && !f.isFailed && !f._processing) {
+                            targetIdx = i;
+                            targetFile = f;
                             break;
                         }
                     }
 
-                    if (!targetFile) { setTimeout(schedule, 1000); return; }
+                    if (targetIdx === -1) {
+                        setTimeout(processQueue, 1000); // 队列空闲，稍后重试
+                        return;
+                    }
 
-                    const wObj = workers[freeWorkerIdx];
-                    wObj.busy = true;
-                    
-                    wObj.worker.onmessage = (e) => {
-                        if (!isActive) return;
-                        wObj.busy = false;
-                        const { id, blob, useOriginal, error } = e.data;
-                        
-                        if (error) {
-                            setGlobalFiles(prev => { const n = [...prev]; if (n[id]) n[id].isFailed = true; return n; });
-                        } else {
-                            const finalUrl = useOriginal 
-                                ? (targetFile.path ? `refflow://${targetFile.path}` : URL.createObjectURL(targetFile)) 
-                                : URL.createObjectURL(blob);
-                                
-                            setGlobalFiles(prev => { 
-                                const n = [...prev]; 
-                                if (n[id] && !n[id].thumbUrl) { n[id].thumbUrl = finalUrl; } 
-                                return n; 
-                            });
+                    // 标记正在处理，防止重复
+                    globalFiles[targetIdx]._processing = true; 
+                    const fileId = getFileId(targetFile);
+
+                    // 2. 尝试从 DB 读取缓存
+                    const cachedBlob = await getFromDb(fileId);
+                    if (cachedBlob) {
+                        const url = URL.createObjectURL(cachedBlob);
+                        setGlobalFiles(prev => {
+                            const n = [...prev];
+                            if (n[targetIdx]) {
+                                n[targetIdx].thumbUrl = url;
+                                delete n[targetIdx]._processing;
+                            }
+                            return n;
+                        });
+                        processQueue(); // 立即处理下一个
+                        return;
+                    }
+
+                    // 3. 缓存没有，需要生成
+                    try {
+                        // 分支 A: 本地路径文件 (从预设加载) -> 使用主线程 Image 加载
+                        if (targetFile.path) {
+                            if (isProcessingPath) {
+                                // 如果主线程正忙，先把标记去掉，稍后处理，先让出控制权
+                                delete globalFiles[targetIdx]._processing;
+                                setTimeout(processQueue, 200);
+                                return;
+                            }
+
+                            isProcessingPath = true;
+                            // 使用 generateThumbnailFromPath 生成
+                            generateThumbnailFromPath(targetFile)
+                                .then(blob => {
+                                    saveToDb(fileId, blob); // 存入缓存
+                                    const url = URL.createObjectURL(blob);
+                                    setGlobalFiles(prev => {
+                                        const n = [...prev];
+                                        if (n[targetIdx]) { n[targetIdx].thumbUrl = url; delete n[targetIdx]._processing; }
+                                        return n;
+                                    });
+                                })
+                                .catch(() => {
+                                    setGlobalFiles(prev => {
+                                        const n = [...prev];
+                                        if (n[targetIdx]) { n[targetIdx].isFailed = true; delete n[targetIdx]._processing; }
+                                        return n;
+                                    });
+                                })
+                                .finally(() => {
+                                    isProcessingPath = false;
+                                    processQueue();
+                                });
+
+                        } 
+                        // 分支 B: 内存 File 对象 (拖拽上传) -> 使用 Worker
+                        else if (targetFile instanceof File) {
+                            const freeWorker = workers.find(w => !w.busy);
+                            if (freeWorker) {
+                                freeWorker.busy = true;
+                                freeWorker.worker.onmessage = (e) => {
+                                    freeWorker.busy = false;
+                                    const { blob, error } = e.data;
+                                    if (!error && blob) {
+                                        saveToDb(fileId, blob); // 存入缓存
+                                        const url = URL.createObjectURL(blob);
+                                        setGlobalFiles(prev => {
+                                            const n = [...prev];
+                                            if (n[targetIdx]) { n[targetIdx].thumbUrl = url; delete n[targetIdx]._processing; }
+                                            return n;
+                                        });
+                                    } else {
+                                        // 失败处理
+                                        setGlobalFiles(prev => {
+                                            const n = [...prev];
+                                            if (n[targetIdx]) { n[targetIdx].isFailed = true; delete n[targetIdx]._processing; }
+                                            return n;
+                                        });
+                                    }
+                                    processQueue(); // Worker 完成后继续
+                                };
+                                freeWorker.worker.postMessage({ file: targetFile, id: targetIdx, maxDim: 400 });
+                            } else {
+                                // 没有空闲 Worker，稍后重试
+                                delete globalFiles[targetIdx]._processing;
+                                setTimeout(processQueue, 200);
+                            }
                         }
-                        schedule();
-                    };
-                    wObj.worker.postMessage({ file: targetFile, id: targetIdx, maxDim: 400 });
-                    schedule();
+                    } catch (err) {
+                        console.error(err);
+                        delete globalFiles[targetIdx]._processing;
+                        processQueue();
+                    }
                 };
-                schedule();
-                return () => { isActive = false; workers.forEach(w => w.worker.terminate()); URL.revokeObjectURL(blobURL); };
+
+                processQueue();
+
+                return () => { 
+                    isActive = false; 
+                    workers.forEach(w => w.worker.terminate()); 
+                    URL.revokeObjectURL(blobURL); 
+                };
             }, [globalFiles]);
 
             useEffect(() => {
@@ -542,7 +724,8 @@
             const [useLocalHistoryForNew, setUseLocalHistoryForNew] = useState(false);
             const [presetToDelete, setPresetToDelete] = useState(null);
 
-            const getFileId = (file) => file ? `${file.name}-${file.size}` : 'unknown';
+            // ✅ 修复：优先使用已存在的 id (针对历史记录中的恢复文件)，否则才通过文件名+大小生成
+            const getFileId = (file) => file ? (file.id || `${file.name}-${file.size}`) : 'unknown';
 
             useEffect(() => {
                 const presetsToSave = presets.map(p => ({
@@ -551,19 +734,46 @@
                 localStorage.setItem('refFlow_presets', JSON.stringify(presetsToSave));
             }, [presets]);
 
+            // ✅ 修复：更新历史记录时，强制同步更新 Presets 状态，解决独立标记不保存的问题
+            const updatePresetHistory = (newHistorySet) => {
+                // 1. 更新当前 UI
+                setDrawnHistory(newHistorySet);
+                
+                // 2. 如果当前正在使用独立历史记录的预设，立即同步到 presets 数组中
+                if (currentPresetId) {
+                    setPresets(prevPresets => {
+                        return prevPresets.map(p => {
+                            if (p.id === currentPresetId && !p.useGlobalHistory) {
+                                return { ...p, localHistory: newHistorySet };
+                            }
+                            return p;
+                        });
+                    });
+                } else {
+                    // 全局模式下写入 localStorage
+                    localStorage.setItem('refFlow_drawnHistory', JSON.stringify([...newHistorySet]));
+                }
+            };
+
             const recordDrawnHistory = (file) => {
                 if (!file) return;
                 const id = getFileId(file);
+                // 使用函数式更新获取最新的 Set，避免闭包问题
                 setDrawnHistory(prev => {
-                    if (prev.has(id)) return prev;
+                    if (prev.has(id)) return prev; // 没变化直接返回
                     const newSet = new Set(prev);
                     newSet.add(id);
-                    const activePresetIndex = presets.findIndex(p => p.id === currentPresetId);
-                    if (activePresetIndex !== -1 && !presets[activePresetIndex].useGlobalHistory) {
-                        const newPresets = [...presets];
-                        newPresets[activePresetIndex].localHistory = newSet;
-                        setTimeout(() => setPresets(newPresets), 0);
-                    } else { localStorage.setItem('refFlow_drawnHistory', JSON.stringify([...newSet])); }
+                    
+                    // 这里不能直接调用 updatePresetHistory，因为我们需要在渲染周期外同步
+                    // 所以我们手动执行 updatePresetHistory 的逻辑：
+                    if (currentPresetId) {
+                        setPresets(prevPresets => prevPresets.map(p => 
+                            (p.id === currentPresetId && !p.useGlobalHistory) ? { ...p, localHistory: newSet } : p
+                        ));
+                    } else {
+                        localStorage.setItem('refFlow_drawnHistory', JSON.stringify([...newSet]));
+                    }
+                    
                     return newSet;
                 });
             };
@@ -573,12 +783,14 @@
                 setDrawnHistory(prev => {
                     const newSet = new Set(prev);
                     if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
-                    const activePresetIndex = presets.findIndex(p => p.id === currentPresetId);
-                    if (activePresetIndex !== -1 && !presets[activePresetIndex].useGlobalHistory) {
-                        const newPresets = [...presets];
-                        newPresets[activePresetIndex].localHistory = newSet;
-                        setPresets(newPresets);
-                    } else { localStorage.setItem('refFlow_drawnHistory', JSON.stringify([...newSet])); }
+                    
+                    if (currentPresetId) {
+                        setPresets(prevPresets => prevPresets.map(p => 
+                            (p.id === currentPresetId && !p.useGlobalHistory) ? { ...p, localHistory: newSet } : p
+                        ));
+                    } else {
+                        localStorage.setItem('refFlow_drawnHistory', JSON.stringify([...newSet]));
+                    }
                     return newSet;
                 });
             };
@@ -590,21 +802,64 @@
                         const file = globalFiles[idx];
                         if (file) { const id = getFileId(file); if (isToDrawn) newSet.add(id); else newSet.delete(id); }
                     });
-                    const activePresetIndex = presets.findIndex(p => p.id === currentPresetId);
-                    if (activePresetIndex !== -1 && !presets[activePresetIndex].useGlobalHistory) {
-                         const newPresets = [...presets];
-                         newPresets[activePresetIndex].localHistory = newSet;
-                         setPresets(newPresets);
-                    } else { localStorage.setItem('refFlow_drawnHistory', JSON.stringify([...newSet])); }
+                    
+                    if (currentPresetId) {
+                        setPresets(prevPresets => prevPresets.map(p => 
+                            (p.id === currentPresetId && !p.useGlobalHistory) ? { ...p, localHistory: newSet } : p
+                        ));
+                    } else {
+                        localStorage.setItem('refFlow_drawnHistory', JSON.stringify([...newSet]));
+                    }
                     return newSet;
                 });
             };
 
-            const getStableSnapshot = (s, stages, hist) => {
+            // 找到 getStableSnapshot 函数，替换为：
+            const getStableSnapshot = (s, stages, hist, files) => {
+                if (!s) return ""; // 防止空指针
+                
+                // 1. 强制类型转换，确保和 settings 状态里的类型一致
                 const normSettings = {
-                    duration: Number(s.duration), isClassMode: Boolean(s.isClassMode), grayscale: Boolean(s.grayscale), flipHorizontal: Boolean(s.flipHorizontal), randomFlip: Boolean(s.randomFlip), fitMode: String(s.fitMode), count: Number(s.count), enableStageAlert: Boolean(s.enableStageAlert), autoContinue: Boolean(s.autoContinue), breakDuration: Number(s.breakDuration), playbackOrder: String(s.playbackOrder)
+                    duration: Number(s.duration || 0),
+                    isClassMode: Boolean(s.isClassMode),
+                    grayscale: Boolean(s.grayscale),
+                    flipHorizontal: Boolean(s.flipHorizontal),
+                    randomFlip: Boolean(s.randomFlip),
+                    fitMode: String(s.fitMode || 'contain'),
+                    count: Number(s.count || 0),
+                    enableStageAlert: Boolean(s.enableStageAlert),
+                    autoContinue: Boolean(s.autoContinue),
+                    breakDuration: Number(s.breakDuration || 5),
+                    playbackOrder: String(s.playbackOrder || 'random')
                 };
-                const snapData = { settings: normSettings, classStages: stages, localHistory: hist ? Array.from(hist).sort() : null };
+
+                // 2. 规范化 Stages (去除可能多余的属性，比如 React 自动添加的 key)
+                const normStages = (stages || []).map(st => ({
+                    duration: Number(st.duration || 60),
+                    count: Number(st.count || 5),
+                    // 只记录文件数量或名字，避免深层对象差异
+                    stageFilesCount: st.stageFiles ? st.stageFiles.length : 0, 
+                    folderName: st.folderName || null
+                }));
+
+                // 3. 规范化历史记录 (转为数组并排序)
+                const normHist = hist ? Array.from(hist).sort() : [];
+
+                // 4. 规范化文件列表 (提取关键特征)
+                // 关键修复：处理 files 为 null 的情况，并确保排序稳定
+                const filesFingerprint = (files || []).map(f => {
+                    // 如果是 File 对象，用 name+size+lastModified
+                    // 如果是普通对象(恢复的)，用 path 或 name+size
+                    return (f.path || (f.name + '-' + f.size));
+                }).sort();
+
+                const snapData = {
+                    settings: normSettings,
+                    classStages: normStages,
+                    localHistory: normHist,
+                    files: filesFingerprint
+                };
+
                 return JSON.stringify(snapData);
             };
 
@@ -612,82 +867,103 @@
             const [showUnsavedModal, setShowUnsavedModal] = useState(false);
             const [pendingAction, setPendingAction] = useState(null);
 
-            const stateRef = useRef({ settings, classStages, drawnHistory, lastSavedSnapshot, currentPresetId, presets });
-            useEffect(() => { stateRef.current = { settings, classStages, drawnHistory, lastSavedSnapshot, currentPresetId, presets }; }, [settings, classStages, drawnHistory, lastSavedSnapshot, currentPresetId, presets]);
+            const stateRef = useRef({ settings, classStages, drawnHistory, lastSavedSnapshot, currentPresetId, presets, globalFiles });
+            useEffect(() => { stateRef.current = { settings, classStages, drawnHistory, lastSavedSnapshot, currentPresetId, presets, globalFiles }; }, [settings, classStages, drawnHistory, lastSavedSnapshot, currentPresetId, presets, globalFiles]);
 
-            const hasUnsavedChanges = () => {
-                const current = stateRef.current;
-                if (!current.lastSavedSnapshot) return false;
-                let shouldTrackHistory = false;
-                if (current.currentPresetId) {
-                    const activePreset = current.presets.find(p => p.id === current.currentPresetId);
-                    if (activePreset && !activePreset.useGlobalHistory) { shouldTrackHistory = true; }
+            // =========================================================
+            // 核心逻辑区域重构 (修复顺序依赖和引用错误)
+            // =========================================================
+
+            // 1. 定义检查函数
+            const hasUnsavedChanges = (isForCloseEvent = false) => {
+                try {
+                    const src = isForCloseEvent ? stateRef.current : { settings, classStages, drawnHistory, lastSavedSnapshot, currentPresetId, presets, globalFiles };
+                    
+                    // 🔴 如果还没生成过快照（比如刚启动），则认为没有修改
+                    if (!src.lastSavedSnapshot) return false; 
+
+                    let historyToCheck = null;
+                    if (src.currentPresetId) {
+                        const activePreset = src.presets.find(p => p.id === src.currentPresetId);
+                        // 只有当预设不使用全局历史时，才检查历史记录的变化
+                        if (activePreset && !activePreset.useGlobalHistory) {
+                            historyToCheck = src.drawnHistory;
+                        }
+                    }
+
+                    // 生成当前状态的快照
+                    const currentSnap = getStableSnapshot(src.settings, src.classStages, historyToCheck, src.globalFiles);
+                    
+                    // 🔴 调试神器：如果觉得有问题，可以取消下面这行的注释，在控制台看看到底哪里不一样
+                    // if (currentSnap !== src.lastSavedSnapshot) {
+                    //     console.log("快照不匹配!");
+                    //     console.log("旧:", src.lastSavedSnapshot);
+                    //     console.log("新:", currentSnap);
+                    // }
+
+                    return currentSnap !== src.lastSavedSnapshot;
+                } catch (e) {
+                    console.error("Check unsaved changes failed:", e);
+                    return false;
                 }
-                const currentSnap = getStableSnapshot(current.settings, current.classStages, shouldTrackHistory ? current.drawnHistory : null);
-                return currentSnap !== current.lastSavedSnapshot;
             };
 
-            useEffect(() => {
-                const handleCloseRequest = () => {
-                    if (hasUnsavedChanges()) { setPendingAction({ type: 'close_app' }); setShowUnsavedModal(true); } else { window.electronAPI?.forceClose(); }
-                };
-                if (window.electronAPI && window.electronAPI.onCloseRequest) {
-                    const removeListener = window.electronAPI.onCloseRequest(handleCloseRequest);
-                    return () => removeListener();
-                }
-            }, [useLocalHistoryForNew]);
-
-            useEffect(() => {
-                const lastId = localStorage.getItem('refFlow_lastActivePresetId');
-                if (lastId && presets.some(p => p.id === lastId)) {
-                    const targetPreset = presets.find(p => p.id === lastId);
-                    if (targetPreset) loadPresetLogic(targetPreset);
-                } else {
-                    setLastSavedSnapshot(getStableSnapshot(settings, classStages, null));
-                }
-            }, []);
-
-            const checkAndExecute = (actionType, payload = null) => {
-                if (hasUnsavedChanges() && (currentPresetId || actionType === 'close_app')) { setPendingAction({ type: actionType, payload }); setShowUnsavedModal(true); } else { executeAction(actionType, payload); }
-            };
-
-            const executeAction = (type, payload) => {
-                if (type === 'load_preset') loadPresetLogic(payload);
-                if (type === 'exit_preset') exitPresetModeLogic();
-                if (type === 'close_app') window.electronAPI?.forceClose();
-            };
-
+            // 2. 定义业务逻辑函数 (Load / Exit)
             const loadPresetLogic = (preset) => {
                 const defaultSet = { duration: 60, isClassMode: false, grayscale: false, flipHorizontal: false, randomFlip: false, fitMode: 'contain', count: 0, enableStageAlert: true, autoContinue: true, breakDuration: 5, playbackOrder: 'random' };
-                const newSettings = { ...defaultSet, ...preset.settings };
+                const newSettings = { ...defaultSet, ...(preset.settings || {}) };
                 const sourceStages = preset.classStages || defaultClassStages;
                 const newStages = sourceStages.map(s => ({ duration: s.duration || 60, count: s.count || 5, stageFiles: s.stageFiles || [], folderName: s.folderName || null }));
+                
                 let newHistorySet;
                 if (preset.useGlobalHistory) {
                     const globalSaved = localStorage.getItem('refFlow_drawnHistory');
                     newHistorySet = globalSaved ? new Set(JSON.parse(globalSaved)) : new Set();
-                } else { newHistorySet = new Set(preset.localHistory || []); }
+                } else { 
+                    newHistorySet = new Set(preset.localHistory || []); 
+                }
 
                 setSettings(newSettings);
                 setClassStages(newStages);
                 
+                // 恢复保存的文件路径
+                let restoredFiles = [];
                 if (preset.savedPaths && preset.savedPaths.length > 0) {
-                    const restoredFiles = preset.savedPaths.map(item => {
+                    restoredFiles = preset.savedPaths.map(item => {
+                        // ... (保持原有的 map 逻辑不变)
                         const filePath = typeof item === 'string' ? item : item.path;
                         const folderName = typeof item === 'string' ? "Restored Files" : item.folder;
                         return { name: filePath.split(/[/\\]/).pop(), path: filePath, size: 0, type: 'image/jpeg', isRestored: true, groupName: folderName };
                     });
                     setGlobalFiles(restoredFiles);
+                } else {
+                    setGlobalFiles([]); // 如果预设没文件，要清空
                 }
 
                 setCurrentPresetId(preset.id);
                 localStorage.setItem('refFlow_lastActivePresetId', preset.id); 
                 setDrawnHistory(newHistorySet);
 
-                const newSnap = getStableSnapshot(newSettings, newStages, (!preset.useGlobalHistory) ? newHistorySet : null);
+                // 🔴 关键修改：直接使用 newSettings, newStages, newHistorySet, restoredFiles 来生成快照
+                // 不要使用 settings, classStages 这些 state 变量，因为它们还没更新！
+                const newSnap = getStableSnapshot(
+                    newSettings, 
+                    newStages, 
+                    (!preset.useGlobalHistory) ? newHistorySet : null, 
+                    restoredFiles // 确保传入的是刚刚恢复的文件列表
+                );
+                
                 setLastSavedSnapshot(newSnap);
-                stateRef.current.lastSavedSnapshot = newSnap; 
-                stateRef.current.currentPresetId = preset.id; 
+                
+                // 更新 Ref，防止后续立即调用检查时出错
+                if(stateRef.current) {
+                    stateRef.current.lastSavedSnapshot = newSnap; 
+                    stateRef.current.currentPresetId = preset.id;
+                    // 手动同步一下其他状态到 Ref，防止时间差
+                    stateRef.current.settings = newSettings;
+                    stateRef.current.classStages = newStages;
+                    stateRef.current.globalFiles = restoredFiles;
+                }
                 
                 setShowPresetManager(false);
             };
@@ -697,48 +973,160 @@
                 localStorage.removeItem('refFlow_lastActivePresetId');
                 const globalSaved = localStorage.getItem('refFlow_drawnHistory');
                 setDrawnHistory(globalSaved ? new Set(JSON.parse(globalSaved)) : new Set());
-                setTimeout(() => setLastSavedSnapshot(getStableSnapshot(settings, classStages, null)), 0);
+                setTimeout(() => setLastSavedSnapshot(getStableSnapshot(settings, classStages, null, globalFiles)), 0);
             };
 
-            const saveCurrentPreset = () => {
-                if (!currentPresetId) return;
-                const idx = presets.findIndex(p => p.id === currentPresetId);
-                if (idx === -1) return;
-                const filesToSave = globalFiles.map(f => ({
-                    path: f.path,
-                    folder: f.groupName || (f.webkitRelativePath ? f.webkitRelativePath.split('/')[0] : "Selected Files")
-                })).filter(item => !!item.path);
+            // 3. 定义执行器 (此时 Logic 函数已就绪)
+            const executeAction = (actionType, payload) => {
+                try {
+                    switch (actionType) {
+                        case 'load_preset':
+                            if (payload) loadPresetLogic(payload);
+                            break;
+                        case 'exit_preset':
+                            exitPresetModeLogic();
+                            break;
+                        case 'close_app':
+                            window.electronAPI?.forceClose();
+                            break;
+                        default:
+                            console.warn("Unknown action:", actionType);
+                            break;
+                    }
+                } catch (e) {
+                    console.error("Execute action failed:", e);
+                    alert("操作执行失败: " + e.message);
+                }
+            };
 
-                const updatedPreset = {
-                    ...presets[idx], settings: { ...settings }, classStages: JSON.parse(JSON.stringify(classStages)), savedPaths: filesToSave, 
-                    localHistory: (!presets[idx].useGlobalHistory) ? new Set(drawnHistory) : presets[idx].localHistory
+            // 4. 定义 Check 函数 (此时 executeAction 已就绪)
+            const checkAndExecute = (actionType, payload = null) => {
+                const shouldCheck = (currentPresetId !== null) || (actionType === 'close_app');
+                
+                if (shouldCheck && hasUnsavedChanges(false)) {
+                    setPendingAction({ type: actionType, payload });
+                    setShowUnsavedModal(true);
+                } else {
+                    executeAction(actionType, payload);
+                }
+            };
+
+            // 5. Electron 关闭监听
+            useEffect(() => {
+                const handleCloseRequest = () => {
+                    if (hasUnsavedChanges(true)) { 
+                        setPendingAction({ type: 'close_app' }); 
+                        setShowUnsavedModal(true); 
+                    } else { 
+                        window.electronAPI?.forceClose(); 
+                    }
                 };
-                const newPresets = [...presets]; newPresets[idx] = updatedPreset; setPresets(newPresets);
-                const useLocal = !updatedPreset.useGlobalHistory;
-                setLastSavedSnapshot(getStableSnapshot(settings, classStages, useLocal ? drawnHistory : null));
-                alert("已保存修改到当前预设。");
-                if (pendingAction) { executeAction(pendingAction.type, pendingAction.payload); setPendingAction(null); setShowUnsavedModal(false); }
+                if (window.electronAPI && window.electronAPI.onCloseRequest) {
+                    const removeListener = window.electronAPI.onCloseRequest(handleCloseRequest);
+                    return () => removeListener();
+                }
+            }, []);
+
+            // 6. 初始加载
+            useEffect(() => {
+                const lastId = localStorage.getItem('refFlow_lastActivePresetId');
+                if (lastId && presets.some(p => p.id === lastId)) {
+                    const targetPreset = presets.find(p => p.id === lastId);
+                    if (targetPreset) loadPresetLogic(targetPreset);
+                } else {
+                    const initialSnap = getStableSnapshot(settings, classStages, null, []); 
+                    setLastSavedSnapshot(initialSnap);
+                    // 同时强制同步 Ref，防止毫秒级的时间差导致 hasUnsavedChanges 读取到旧数据
+                    if(stateRef.current) {
+                        stateRef.current.lastSavedSnapshot = initialSnap;
+                        // 确保 Ref 里的文件列表也是空的，防止脏数据
+                        stateRef.current.globalFiles = []; 
+                    }
+                }
+            }, []);
+            // 7. 定义 UI 事件处理器 (必须在所有逻辑函数之后)
+            const handleAppCloseRequest = () => {
+                checkAndExecute('close_app');
             };
 
             const saveNewPreset = () => {
-                if (!editingPresetName.trim()) return;
-                const filesToSave = globalFiles.map(f => ({
-                    path: f.path,
-                    folder: f.groupName || (f.webkitRelativePath ? f.webkitRelativePath.split('/')[0] : "Selected Files")
-                })).filter(item => !!item.path);
-
+                if (!editingPresetName.trim()) { alert("请输入预设名称"); return; }
                 const newPreset = {
-                    id: Date.now().toString(), name: editingPresetName, settings: { ...settings }, classStages: JSON.parse(JSON.stringify(classStages)), 
-                    savedPaths: filesToSave, useGlobalHistory: !useLocalHistoryForNew, localHistory: useLocalHistoryForNew ? new Set() : null
+                    id: Date.now().toString(),
+                    name: editingPresetName,
+                    settings: settings,
+                    classStages: classStages,
+                    useGlobalHistory: !useLocalHistoryForNew,
+                    localHistory: useLocalHistoryForNew ? new Set() : null,
+                    savedPaths: globalFiles.map(f => ({ path: f.path, folder: f.groupName }))
                 };
-                setPresets([...presets, newPreset]); setCurrentPresetId(newPreset.id); localStorage.setItem('refFlow_lastActivePresetId', newPreset.id); setEditingPresetName("");
-                setLastSavedSnapshot(getStableSnapshot(settings, classStages, useLocalHistoryForNew ? new Set() : null));
+                setPresets([...presets, newPreset]);
+                setCurrentPresetId(newPreset.id);
+                setEditingPresetName("");
+                
+                const newSnap = getStableSnapshot(settings, classStages, useLocalHistoryForNew ? new Set() : null, globalFiles);
+                setLastSavedSnapshot(newSnap);
+                if(stateRef.current) {
+                    stateRef.current.lastSavedSnapshot = newSnap;
+                    stateRef.current.currentPresetId = newPreset.id;
+                }
             };
 
-            const deletePreset = (id) => { setPresetToDelete(id); };
-            const performDeletePreset = () => { if (!presetToDelete) return; const id = presetToDelete; setPresets(prev => prev.filter(p => p.id !== id)); if (currentPresetId === id) exitPresetModeLogic(); setPresetToDelete(null); };
-            const restoreDefaults = () => { if (!confirm(currentPresetId ? "确定要重置当前预设的所有设置吗？(图片不会删除)" : "确定要恢复软件默认设置吗？")) return; const defaults = { duration: 60, isClassMode: false, grayscale: false, flipHorizontal: false, randomFlip: false, fitMode: 'contain', count: 0, enableStageAlert: true, autoContinue: true, breakDuration: 5, playbackOrder: 'random' }; const defaultStages = [{ duration: 30, count: 5, stageFiles: [], folderName: null }, { duration: 60, count: 5, stageFiles: [], folderName: null }, { duration: 300, count: 2, stageFiles: [], folderName: null }]; setSettings(defaults); setClassStages(defaultStages); };
-            const handleAppCloseRequest = () => { checkAndExecute('close_app'); };
+            const saveCurrentPreset = () => {
+                // 【修复 1】处理默认配置的情况
+                if (!currentPresetId) {
+                    alert("当前为【默认配置】，无法覆盖保存。\n\n请点击“取消”，然后在预设管理器中选择“保存当前状态为新预设”。");
+                    // 或者你可以选择直接关闭弹窗并打开管理器：
+                    // setShowUnsavedModal(false);
+                    // setShowPresetManager(true);
+                    // setPendingAction(null); // 取消之前的跳转/关闭操作，让用户先去保存
+                    return;
+                }
+                
+                setPresets(prev => prev.map(p => {
+                    if (p.id === currentPresetId) {
+                        return {
+                            ...p,
+                            settings: settings,
+                            classStages: classStages,
+                            localHistory: p.useGlobalHistory ? null : drawnHistory,
+                            savedPaths: globalFiles.map(f => ({ path: f.path, folder: f.groupName }))
+                        };
+                    }
+                    return p;
+                }));
+                
+                // 获取更新后的快照
+                const activePreset = presets.find(p => p.id === currentPresetId);
+                // 注意：这里的 activePreset 是更新前的状态，但对于 useGlobalHistory 属性来说通常没问题
+                const historyToCheck = (activePreset && !activePreset.useGlobalHistory) ? drawnHistory : null;
+                const newSnap = getStableSnapshot(settings, classStages, historyToCheck, globalFiles);
+                
+                setLastSavedSnapshot(newSnap);
+                if(stateRef.current) stateRef.current.lastSavedSnapshot = newSnap;
+                
+                setShowUnsavedModal(false);
+                
+                // 执行之前挂起的操作（如切换预设或关闭应用）
+                if (pendingAction) {
+                    executeAction(pendingAction.type, pendingAction.payload);
+                    setPendingAction(null);
+                }
+            };
+
+            const deletePreset = (id) => {
+                if (!confirm("确定删除此预设吗？")) return;
+                setPresets(prev => prev.filter(p => p.id !== id));
+                if (currentPresetId === id) {
+                    exitPresetModeLogic();
+                }
+            };
+
+            const restoreDefaults = () => {
+                if(!confirm("确定恢复默认设置？当前未保存的更改将丢失。")) return;
+                setSettings({ duration: 60, isClassMode: false, grayscale: false, flipHorizontal: false, randomFlip: false, fitMode: 'contain', count: 0, enableStageAlert: true, autoContinue: true, breakDuration: 5, playbackOrder: 'random' });
+                setClassStages(defaultClassStages);
+            };
 
             const handleSelect = (e, globalIndex) => {
                 e.stopPropagation(); 
@@ -855,8 +1243,21 @@
                     return combined; 
                 }); 
             };
-            const handleFolderSelect = (e) => { const files = filterImageFiles(e.target.files); if(files.length===0){alert("未找到图片");return;} addFilesToGlobal(files, getFolderName(e.target.files)); };
-            const handleFileSelect = (e) => { const files = filterImageFiles(e.target.files); if(files.length===0){alert("未选择图片");return;} addFilesToGlobal(files, "Selected Files"); };
+            const handleFolderSelect = (e) => { 
+                const files = filterImageFiles(e.target.files); 
+                if(files.length===0){alert("未找到图片");return;} 
+                addFilesToGlobal(files, getFolderName(e.target.files)); 
+                
+                e.target.value = ''; // ✅ 新增这一行：重置输入框，修复无法重复添加的 Bug
+            };
+
+            const handleFileSelect = (e) => { 
+                const files = filterImageFiles(e.target.files); 
+                if(files.length===0){alert("未选择图片");return;} 
+                addFilesToGlobal(files, "Selected Files"); 
+                
+                e.target.value = ''; // ✅ 新增这一行
+            };
             const onMainDrop = (e) => { e.preventDefault(); const files = e.dataTransfer.items ? Array.from(e.dataTransfer.items).filter(i=>i.kind==='file').map(i=>i.getAsFile()) : Array.from(e.dataTransfer.files); const imgs = filterImageFiles(files); if(imgs.length>0) addFilesToGlobal(imgs, "Dropped Files"); };
             const handleStageFolderSelect = (e, idx) => { const files = filterImageFiles(e.target.files); if(files.length===0)return; const stages = [...classStages]; const current = [...(stages[idx].stageFiles||[])]; files.forEach(f=>{if(!current.some(ex=>ex.name===f.name && ex.size===f.size)) current.push(f);}); stages[idx].stageFiles = current; stages[idx].folderName = stages[idx].folderName ? "Mixed Sources" : getFolderName(e.target.files); setClassStages(stages); };
             const handleStageFileSelect = (e, idx) => { const files = filterImageFiles(e.target.files); if(files.length===0)return; const stages = [...classStages]; const current = [...(stages[idx].stageFiles||[])]; files.forEach(f=>{if(!current.some(ex=>ex.name===f.name && ex.size===f.size)) current.push(f);}); stages[idx].stageFiles = current; stages[idx].folderName = stages[idx].folderName ? "Mixed Sources" : "Selected Files"; setClassStages(stages); };
@@ -1079,12 +1480,14 @@
                     <div className="h-screen w-full bg-zinc-950 text-zinc-100 font-sans relative overflow-hidden flex flex-col">
                         <CustomTitleBar appState={appState} onClose={handleAppCloseRequest} />
                         
+                        {/* 主界面内容 */}
                         <div className="flex-1 overflow-y-auto w-full scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent pt-14">
                             <div className="min-h-full flex flex-col items-center justify-center p-4 md:p-8">
                                 <div className="max-w-5xl w-full space-y-8">
                                     <div className="text-center space-y-1 mb-4"><h1 className="text-3xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-500 tracking-tighter flex items-center justify-center gap-4 pb-2"><ImageIcon size={48} className="text-blue-500" /> RefFlow</h1><p className="text-zinc-500 font-medium">完全本地化的速写训练工具</p></div>
                                     
                                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                        {/* 左侧栏 */}
                                         <div className="lg:col-span-4 flex flex-col gap-4">
                                             <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 flex flex-col items-center text-center h-full justify-center shadow-lg relative overflow-hidden group cursor-pointer transition-all hover:border-blue-500/30" onClick={() => fileInputRef.current.click()} onDragOver={onDragOver} onDrop={onMainDrop}>
                                                 <input type="file" ref={folderInputRef} webkitdirectory="" directory="" multiple className="hidden" onChange={handleFolderSelect} onClick={(e) => e.stopPropagation()} />
@@ -1092,9 +1495,20 @@
                                                 {globalFiles.length > 0 ? (<div className="w-full space-y-4 z-10" onClick={(e) => e.stopPropagation()}><div className="w-20 h-20 mx-auto bg-blue-600/10 rounded-full flex items-center justify-center border border-blue-500/20 text-blue-400 shadow-[0_0_30px_rgba(37,99,235,0.15)]"><List size={32} /></div><div><h2 className="text-2xl font-bold text-white">{globalFiles.length}</h2><p className="text-sm text-zinc-500">张图片已加载 (全局)</p>{globalFolderName && <div className="mt-1 inline-block px-2 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 max-w-[200px] truncate">{globalFolderName}</div>}</div><button onClick={() => setShowListManager(true)} className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-xl font-medium transition-all flex items-center justify-center gap-2 border border-zinc-700/50 hover:border-zinc-600"><LayoutGrid size={16} /> 管理全局列表</button></div>) : (<div className="space-y-4 z-10 pointer-events-none"><div className="w-20 h-20 mx-auto bg-zinc-800 rounded-full flex items-center justify-center border border-zinc-700 text-zinc-600 group-hover:border-blue-500/50 group-hover:text-blue-400 transition-colors"><UploadCloud size={32} /></div><div><h3 className="text-lg font-medium text-zinc-300 group-hover:text-blue-200 transition-colors">点击或拖拽添加图片</h3><p className="text-sm text-zinc-500">支持 jpg, png, webp 等格式</p></div></div>)}
                                                 <div className="grid grid-cols-1 w-full mt-6 z-10" onClick={(e) => e.stopPropagation()}><button onClick={() => folderInputRef.current.click()} className="py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-medium transition-colors border border-zinc-700/50 flex items-center justify-center gap-2"><FolderOpen size={16} /> 添加文件夹</button></div>
                                             </div>
+
+                                            {/* 练习数据统计卡片 */}
+                                            <div onClick={() => setShowHistoryManager(true)} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between cursor-pointer hover:border-zinc-600 hover:bg-zinc-800/50 transition-all group shadow-lg">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="w-12 h-12 bg-green-500/10 rounded-full flex items-center justify-center text-green-500 border border-green-500/20 group-hover:scale-110 transition-transform"><Award size={24} /></div>
+                                                    <div><div className="text-3xl font-mono font-bold text-white leading-none">{drawnHistory.size}</div><div className="text-xs text-zinc-500 mt-1 font-medium">累计练习 (张)</div></div>
+                                                </div>
+                                                <div className="text-zinc-600 group-hover:text-zinc-300 transition-colors bg-zinc-950 p-2 rounded-lg"><ChevronRight size={20}/></div>
+                                            </div>
+
                                             <div className="flex items-center justify-between bg-zinc-900 border border-zinc-800 rounded-xl p-4"><div className="flex items-center gap-3"><div className="p-2 bg-purple-500/10 rounded-lg text-purple-400"><Archive size={20} /></div><div><div className="text-sm font-bold text-zinc-200">{currentPresetId ? presets.find(p => p.id === currentPresetId)?.name : "默认配置"}</div><div className="text-xs text-zinc-500">{currentPresetId ? (presets.find(p => p.id === currentPresetId)?.useGlobalHistory ? "使用全局标记" : "使用独立标记") : "未加载预设"}</div></div></div><button onClick={() => setShowPresetManager(true)} className="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg border border-zinc-700 transition-colors">切换预设</button></div>
                                         </div>
                                         
+                                        {/* 右侧栏 */}
                                         <div className="lg:col-span-8 flex flex-col gap-6">
                                             <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-lg">
                                                 <div className="flex items-center gap-2 mb-6 text-blue-400 font-bold tracking-wide uppercase text-xs"><Clock size={14} /> 播放设置</div>
@@ -1130,41 +1544,336 @@
                             </div>
                         </div>
 
+                        {/* Modals 区域 */}
+                        
                         {errorInfo && (<div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-200"><div className="bg-zinc-900 border border-red-900/50 rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-red-900/20"><h3 className="text-xl font-bold text-red-400 mb-4 flex items-center gap-2"><AlertTriangle size={24} /> {errorInfo.title}</h3><div className="text-zinc-300 whitespace-pre-line mb-8 text-sm">{errorInfo.content}</div><button onClick={() => setErrorInfo(null)} className="w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl border border-zinc-700">知道了</button></div></div>)}
 
+                        {/* 大图预览 */}
                         {previewFile && (
-                            <div 
-                                className="fixed inset-0 z-[90] bg-black/95 flex items-center justify-center pt-14 overflow-hidden" 
-                                onClick={() => setPreviewFile(null)}
-                                onWheel={handlePreviewWheel}
-                                onMouseUp={handlePreviewMouseUp}
-                                onMouseLeave={handlePreviewMouseUp}
-                                onMouseMove={handlePreviewMouseMove}
-                            >
-                                <img 
-                                    ref={previewImgRef}
-                                    src={previewUrl}  /* ✅ 修改：这里改用 previewUrl */
-                                    alt="preview" 
-                                    onMouseDown={handlePreviewMouseDown}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="max-w-none shadow-2xl origin-center will-change-transform"
-                                    decoding="async"
-                                    style={{
-                                        cursor: 'grab',
-                                        maxWidth: '90vw',
-                                        maxHeight: '85vh',
-                                        willChange: 'transform',
-                                        backfaceVisibility: 'hidden'
-                                    }}
-                                />
-                                
+                            <div className="fixed inset-0 z-[90] bg-black/95 flex items-center justify-center pt-14 overflow-hidden" onClick={() => setPreviewFile(null)} onWheel={handlePreviewWheel} onMouseUp={handlePreviewMouseUp} onMouseLeave={handlePreviewMouseUp} onMouseMove={handlePreviewMouseMove}>
+                                <img ref={previewImgRef} src={previewUrl} alt="preview" onMouseDown={handlePreviewMouseDown} onClick={(e) => e.stopPropagation()} className="max-w-none shadow-2xl origin-center will-change-transform" decoding="async" style={{ cursor: 'grab', maxWidth: '90vw', maxHeight: '85vh', willChange: 'transform', backfaceVisibility: 'hidden' }} />
                                 <button onClick={(e) => { e.stopPropagation(); setPreviewFile(null); }} className="absolute top-16 right-6 p-2 bg-zinc-800 rounded-full text-white hover:bg-zinc-700 hover:scale-110 transition-transform z-[100]" title="关闭预览"><X size={24}/></button>
                                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-3 py-1 bg-black/60 text-zinc-300 text-xs rounded-full pointer-events-none">{Math.round(previewScale * 100)}%</div>
                             </div>
                         )}
 
+                        {/* 预设管理器 (修复：之前可能丢失了) */}
+                        {showPresetManager && (
+                            <div className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+                                <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[80vh]">
+                                    <div className="p-5 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl"><h3 className="font-bold text-xl flex items-center gap-2 text-purple-400"><Archive size={20} /> 预设方案管理</h3><div className="flex gap-2"><button onClick={restoreDefaults} className="p-2 bg-zinc-800 hover:bg-red-900/30 text-zinc-400 hover:text-red-400 rounded-lg transition-colors" title="恢复默认设置"><RotateCcw size={18} /></button><button onClick={() => setShowPresetManager(false)} className="text-zinc-400 hover:text-white"><X size={24} /></button></div></div>
+                                    <div className="p-6 overflow-y-auto flex-1 bg-zinc-950/30">
+                                        <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 mb-6">
+                                            <h4 className="text-sm font-bold text-white mb-3 flex items-center gap-2"><SaveAll size={16}/> 保存当前状态为新预设</h4>
+                                            <div className="flex gap-3 mb-3">
+                                                <input ref={presetNameInputRef} type="text" placeholder="输入预设名称" value={editingPresetName} onChange={(e) => setEditingPresetName(e.target.value)} className="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:border-purple-500 outline-none text-white select-text" />
+                                                <button onClick={saveNewPreset} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-bold">保存</button>
+                                            </div>
+                                            <div className="flex items-center gap-6 text-xs bg-zinc-950/50 p-3 rounded-lg border border-zinc-800/50"><span className="text-zinc-500 font-bold">已画/未画记录:</span><label className="flex items-center gap-2 cursor-pointer text-zinc-300 hover:text-white transition-colors"><input type="radio" name="historyType" className="accent-purple-500" checked={!useLocalHistoryForNew} onChange={() => setUseLocalHistoryForNew(false)} /><div className="flex items-center gap-1"><Globe size={12}/> 沿用全局总记录</div></label><label className="flex items-center gap-2 cursor-pointer text-zinc-300 hover:text-white transition-colors"><input type="radio" name="historyType" className="accent-purple-500" checked={useLocalHistoryForNew} onChange={() => setUseLocalHistoryForNew(true)} /><div className="flex items-center gap-1"><Lock size={12}/> 单独一份记录</div></label></div>
+                                        </div>
+                                        <div className="space-y-3">
+                                            <h4 className="text-xs font-bold text-zinc-500 uppercase mb-2">已保存的预设</h4>
+                                            {presets.length === 0 && <div className="text-center text-zinc-600 py-8">暂无预设</div>}
+                                            {presets.map(preset => (<div key={preset.id} className={`group flex items-center justify-between p-4 rounded-xl border transition-all ${currentPresetId === preset.id ? 'bg-purple-900/20 border-purple-500/50' : 'bg-zinc-900 border-zinc-800 hover:border-zinc-600'}`}><div><div className="flex items-center gap-2 mb-1"><span className={`font-bold ${currentPresetId === preset.id ? 'text-purple-400' : 'text-zinc-200'}`}>{preset.name}</span>{currentPresetId === preset.id && <span className="text-[10px] bg-purple-500 text-white px-1.5 py-0.5 rounded">当前使用</span>}</div><div className="text-xs text-zinc-500 flex items-center gap-3"><span>{preset.savedPaths?.length || preset.files?.length || 0} 张图片</span><span className="w-px h-3 bg-zinc-700"></span><span className="flex items-center gap-1">{preset.useGlobalHistory ? <Globe size={10}/> : <Lock size={10}/>}{preset.useGlobalHistory ? "共用标记" : "独立标记"}</span></div></div><div className="flex items-center gap-2">{currentPresetId !== preset.id ? (<button onClick={() => checkAndExecute('load_preset', preset)} className="px-3 py-1.5 bg-zinc-800 hover:bg-purple-600 hover:text-white text-zinc-300 rounded-lg text-xs transition-colors">读取</button>) : (<button onClick={() => checkAndExecute('exit_preset')} className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs transition-colors">退出预设</button>)}<button onClick={() => deletePreset(preset.id)} className="p-1.5 hover:bg-red-900/30 text-zinc-500 hover:text-red-400 rounded-lg transition-colors"><Trash2 size={14}/></button></div></div>))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 7. 练习历史记录管理窗口 (智能路径恢复版) */}
+            {showHistoryManager && (() => {
+                // ✅ 辅助函数：专门修复 File 对象展开后丢失 path 的问题
+                const cloneFile = (f) => {
+                    // 如果是原生 File 对象，必须手动复制属性
+                    if (f instanceof File) {
+                        return {
+                            name: f.name,
+                            path: f.path, // ✅ 核心修复：确保保留 path，让预览能读取原图
+                            size: f.size,
+                            type: f.type,
+                            thumbUrl: f.thumbUrl, // 保留缩略图引用
+                            lastModified: f.lastModified
+                        };
+                    }
+                    // 如果已经是普通对象（比如恢复的记录），直接复制
+                    return { ...f };
+                };
+
+                // 1. 构建列表
+                let historyList = [];
+                if (!historyShowAll) {
+                    // 模式 1: 仅当前库
+                    historyList = globalFiles
+                        .filter(f => drawnHistory.has(getFileId(f)))
+                        .map(f => ({ ...cloneFile(f), id: getFileId(f), _isMissing: false }));
+                } else {
+                    // 模式 2: 所有历史
+                    historyList = Array.from(drawnHistory).map(id => {
+                        const file = globalFiles.find(f => getFileId(f) === id);
+                        if (file) return { ...cloneFile(file), id: id, _isMissing: false }; // ✅ 这里也用了 cloneFile
+                        
+                        // 尝试从历史路径恢复
+                        const savedPath = historyPaths[id];
+                        if (savedPath) {
+                            const normalizedPath = savedPath.replace(/\\/g, '/');
+                            const name = id.substring(0, id.lastIndexOf('-')) || id;
+                            return { 
+                                id: id, 
+                                name: name, 
+                                path: normalizedPath, // 恢复的文件本来就有 path，没问题
+                                thumbUrl: `refflow://${normalizedPath}`, 
+                                size: 0,
+                                type: 'image/jpeg',
+                                _isMissing: false, 
+                                _isRecovered: true 
+                            };
+                        }
+                        return { id: id, name: id.split('-')[0], _isMissing: true };
+                    });
+                }
+
+                // 2. 独立的删除逻辑
+                const handleRemoveIds = (idsToRemove) => {
+                    if (!idsToRemove || idsToRemove.length === 0) return;
+                    setDrawnHistory(prev => {
+                        const newSet = new Set(prev);
+                        idsToRemove.forEach(id => newSet.delete(id));
+
+                        const activePresetIndex = presets.findIndex(p => p.id === currentPresetId);
+                        if (activePresetIndex !== -1 && !presets[activePresetIndex].useGlobalHistory) {
+                            const newPresets = [...presets];
+                            newPresets[activePresetIndex].localHistory = newSet;
+                            setPresets(newPresets);
+                        } else { 
+                            localStorage.setItem('refFlow_drawnHistory', JSON.stringify([...newSet])); 
+                        }
+                        return newSet;
+                    });
+                };
+
+                const onSingleRemove = (item) => handleRemoveIds([item.id]);
+
+                const onBatchRemove = () => {
+                    if (selectedIndices.size === 0) return;
+                    if (!confirm(`确定要取消标记选中的 ${selectedIndices.size} 张图片吗？`)) return;
+                    
+                    const idsToRemove = [];
+                    selectedIndices.forEach(idx => {
+                        const item = historyList[idx];
+                        if (item && item.id) idsToRemove.push(item.id);
+                    });
+                    
+                    handleRemoveIds(idsToRemove);
+                    setSelectedIndices(new Set());
+                };
+
+                return (
+                    <div className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200" onClick={() => setSelectedIndices(new Set())}>
+                        <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-5xl shadow-2xl flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
+                            
+                            {/* 标题栏 */}
+                            <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-2 bg-green-900/30 rounded-lg text-green-500"><Award size={20} /></div>
+                                    <div>
+                                        <h3 className="font-bold text-lg">已练习图库</h3>
+                                        <p className="text-xs text-zinc-500">{historyShowAll ? "显示所有历史记录" : "仅显示当前库中文件"}</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                    <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+                                        <button onClick={() => {setHistoryShowAll(false); setSelectedIndices(new Set());}} className={`px-3 py-1 text-xs rounded-md transition-all ${!historyShowAll ? 'bg-zinc-800 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}>仅当前库</button>
+                                        <button onClick={() => {setHistoryShowAll(true); setSelectedIndices(new Set());}} className={`px-3 py-1 text-xs rounded-md transition-all ${historyShowAll ? 'bg-zinc-800 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}>完整记录</button>
+                                    </div>
+                                    <div className="text-sm font-mono text-green-400 bg-green-900/20 px-3 py-1 rounded-full border border-green-900/30">Total: {drawnHistory.size}</div>
+                                    <button onClick={() => {setShowHistoryManager(false); setSelectedIndices(new Set());}}><X size={24} className="text-zinc-400 hover:text-white"/></button>
+                                </div>
+                            </div>
+
+                            {/* 列表内容 */}
+                            <div className="p-6 flex-1 overflow-y-auto bg-zinc-950/50" onClick={() => setSelectedIndices(new Set())}>
+                                {historyList.length === 0 ? (
+                                    <div className="h-full flex flex-col items-center justify-center text-zinc-600 gap-4"><Award size={64} className="opacity-20"/><p>暂无记录，快去开始练习吧！</p></div>
+                                ) : (
+                                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                                        {historyList.map((item, i) => {
+                                            if (item._isMissing) {
+                                                return (
+                                                    <div key={item.id} className="relative group aspect-square rounded-lg border border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center text-center p-2">
+                                                        <AlertTriangle size={24} className="text-zinc-700 mb-2"/>
+                                                        <div className="text-xs text-zinc-500 font-mono truncate w-full">{item.name}</div>
+                                                        <div className="text-[10px] text-red-900/50 mt-1">文件彻底丢失</div>
+                                                        <button onClick={(e) => { e.stopPropagation(); onSingleRemove(item); }} className="absolute top-1 right-1 p-1.5 text-zinc-600 hover:text-red-400 bg-zinc-900 rounded hover:bg-zinc-800 transition-colors" title="移除"><X size={14}/></button>
+                                                    </div>
+                                                );
+                                            }
+                                            return (
+                                                <ThumbnailItem 
+                                                    key={item.id || i} 
+                                                    file={item} 
+                                                    thumbUrl={item.thumbUrl} 
+                                                    index={i} 
+                                                    isDrawn={true} 
+                                                    isSelected={selectedIndices.has(i)}
+                                                    onClick={(e) => handleSelect(e, i)}
+                                                    onPreview={setPreviewFile}
+                                                    onToggleDrawn={() => onSingleRemove(item)} 
+                                                    showAddButton={false} 
+                                                />
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                            
+                            {/* 底部浮动操作栏 */}
+                            {selectedIndices.size > 0 && (
+                                <div className="absolute bottom-20 left-0 right-0 flex justify-center z-30 pointer-events-none animate-in slide-in-from-bottom-4 fade-in duration-200">
+                                    <div className="bg-zinc-800 border border-zinc-700 shadow-2xl rounded-full px-6 py-3 flex items-center gap-4 pointer-events-auto">
+                                        <div className="text-sm font-bold text-white border-r border-zinc-600 pr-4 mr-2">已选 {selectedIndices.size} 张</div>
+                                        <button onClick={onBatchRemove} className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors bg-red-900/20 px-3 py-1.5 rounded-full hover:bg-red-900/40">
+                                            <Circle size={14} /> 批量取消标记
+                                        </button>
+                                        <button onClick={() => setSelectedIndices(new Set())} className="ml-2 text-zinc-500 hover:text-zinc-300"><X size={16}/></button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* 底部栏 */}
+                            <div className="p-4 border-t border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-b-xl">
+                                <button onClick={() => { if(confirm("⚠️ 确定要清空所有练习记录吗？")) { setDrawnHistory(new Set()); localStorage.removeItem('refFlow_drawnHistory'); setHistoryPaths({}); localStorage.removeItem('refFlow_historyPaths'); } }} className="px-4 py-2 text-xs text-red-400 hover:bg-red-900/20 rounded-lg transition-colors flex items-center gap-2 border border-transparent hover:border-red-900/30"><Trash2 size={14}/> 清空所有记录</button>
+                                <button onClick={() => {setShowHistoryManager(false); setSelectedIndices(new Set());}} className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg text-sm font-medium shadow-lg">关闭</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* ✅ 修复：增强版预览队列 (支持标记、去除已画、自动补全) */}
+            {showSessionPreview && (
+                <div className="fixed inset-0 z-[80] bg-black/90 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-5xl shadow-2xl flex flex-col h-[85vh]">
+                        {/* 顶部标题 */}
+                        <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
+                            <h3 className="font-bold text-lg flex items-center gap-2"><LayoutGrid size={20} className="text-blue-500"/> 本次播放队列预览</h3>
+                            <div className="flex items-center gap-3">
+                                <span className="text-sm text-zinc-500">共 {pendingSessionQueue?.length} 张</span>
+                                <button onClick={() => { setShowSessionPreview(false); setPendingSessionQueue(null); }}><X size={24} className="text-zinc-400 hover:text-white"/></button>
+                            </div>
+                        </div>
+
+                        {/* 中间列表区域 */}
+                        <div className="p-6 flex-1 overflow-y-auto bg-zinc-950/50">
+                            {!pendingSessionQueue || pendingSessionQueue.length === 0 ? (
+                                <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-4">
+                                    <div className="p-4 bg-zinc-900 rounded-full"><ImageIcon size={48} className="opacity-20"/></div>
+                                    <p>队列为空</p>
+                                    <div className="flex gap-3">
+                                        <button onClick={() => setShowLibrarySelector(true)} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg transition-colors flex items-center gap-2 text-sm">
+                                            <FolderOpen size={16}/> 手动选择
+                                        </button>
+                                        <button onClick={replenishPreview} className="px-4 py-2 bg-zinc-800 hover:bg-blue-600 hover:text-white text-zinc-400 rounded-lg transition-colors flex items-center gap-2 text-sm">
+                                            <Plus size={16}/> 自动补全
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                                    {pendingSessionQueue.map((item, i) => (
+                                        <div key={i} className="relative group">
+                                            <ThumbnailItem 
+                                                file={item.file}
+                                                thumbUrl={item.file.thumbUrl}
+                                                index={i}
+                                                // 保持原有的逻辑
+                                                isDrawn={drawnHistory.has(getFileId(item.file))}
+                                                onToggleDrawn={toggleDrawn}
+                                                
+                                                onDragStart={onPreviewDragStart} 
+                                                onDrop={onPreviewDrop} 
+                                                onDragOver={onDragOver}
+                                                onRemove={() => removePreviewItem(i)}
+                                                onPreview={setPreviewFile}
+                                                onClick={() => setPreviewFile(item.file)}
+                                                showAddButton={false}
+                                            />
+                                            
+                                            {/* 悬浮角标位置调整 */}
+                                            <div className="pointer-events-none">
+                                                {item.stageIndex && (
+                                                    // 1. 阶段标：从左下移到 左上 (top-1 left-1)
+                                                    <div className="absolute top-1 left-1 bg-blue-600/90 text-white text-[10px] px-1.5 py-0.5 rounded shadow-sm z-20 font-bold">
+                                                        S{item.stageIndex}
+                                                    </div>
+                                                )}
+                                                
+                                                {/* 2. 秒数：从右下移到 左下 (bottom-1 left-1)，避开右下角的已画按钮 */}
+                                                <div className="absolute bottom-1 left-1 bg-black/70 text-zinc-300 text-[10px] px-1.5 py-0.5 rounded font-mono border border-white/10 z-20">
+                                                    {item.duration}s
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                    
+                                    {/* 列表末尾的快捷补全按钮 */}
+                                    <button onClick={replenishPreview} className="aspect-square rounded-lg border border-dashed border-zinc-700 hover:border-blue-500 hover:bg-zinc-800 transition-all flex flex-col items-center justify-center gap-2 text-zinc-500 hover:text-blue-400 group" title="补充更多图片">
+                                        <Plus size={24} className="group-hover:scale-110 transition-transform"/>
+                                        <span className="text-xs">补全</span>
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* 底部操作栏 */}
+                        <div className="p-4 border-t border-zinc-800 bg-zinc-900 rounded-b-xl flex justify-between items-center gap-4">
+                            <div className="flex items-center gap-2">
+                                <button onClick={regeneratePreview} className="px-3 py-2 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg border border-zinc-700 flex items-center gap-2 transition-colors" title="完全重新生成队列">
+                                    <RefreshCw size={14}/> 重新生成
+                                </button>
+                                
+                                <div className="w-px h-6 bg-zinc-800 mx-1"></div>
+                                
+                                {/* ✅ 新增：手动添加 */}
+                                <button 
+                                    onClick={() => setShowLibrarySelector(true)} 
+                                    className="px-3 py-2 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg border border-zinc-700 flex items-center gap-2 transition-colors"
+                                    title="手动从库中选择图片"
+                                >
+                                    <FolderOpen size={14}/> 手动添加
+                                </button>
+
+                                {/* 自动补全 */}
+                                <button 
+                                    onClick={replenishPreview} 
+                                    className="px-3 py-2 text-xs bg-zinc-800 hover:bg-zinc-700 text-blue-400 hover:text-blue-300 rounded-lg border border-zinc-700 flex items-center gap-2 transition-colors"
+                                    title="补充图片直到达到设定数量"
+                                >
+                                    <Plus size={14}/> 自动补全
+                                </button>
+
+                                {/* 去除已画 */}
+                                <button 
+                                    onClick={() => setPendingSessionQueue(prev => prev.filter(item => !drawnHistory.has(getFileId(item.file))))} 
+                                    className="px-3 py-2 text-xs bg-zinc-800 hover:bg-zinc-700 text-green-400 hover:text-green-300 rounded-lg border border-zinc-700 flex items-center gap-2 transition-colors ml-2"
+                                    title="移除队列中所有已标记为'已画'的图片"
+                                >
+                                    <CheckCircle size={14}/> 去除已画
+                                </button>
+                            </div>
+
+                            <button onClick={() => { launchQueue(pendingSessionQueue); setShowSessionPreview(false); }} className="px-8 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg shadow-lg shadow-blue-900/20 flex items-center gap-2 active:scale-95 transition-all">
+                                <Play size={16} fill="currentColor"/> 开始播放
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+                        {/* 其他 Modals ... */}
+                        {/* 8. 图片选择器 (用于手动添加到队列) */}
                         {showLibrarySelector && (
-                            <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+                            // ✅ 核心修复：Z-Index 提升到 90，确保浮在预览窗口(z-80)上面
+                            <div className="fixed inset-0 z-[90] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
                                 <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-6xl shadow-2xl flex flex-col h-[85vh]">
                                     <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
                                         <div className="flex items-center gap-4">
@@ -1176,7 +1885,6 @@
                                         </div>
                                         <button onClick={() => setShowLibrarySelector(false)}><X size={24} className="text-zinc-400 hover:text-white"/></button>
                                     </div>
-
                                     <div className="p-6 flex-1 overflow-y-auto bg-zinc-950/50">
                                         {viewMode === 'folder' ? (
                                             <div className="space-y-6">
@@ -1187,54 +1895,60 @@
                                                         return (<React.Fragment key={stepPath}><ChevronRight size={14}/><button onClick={() => setCurrentPath(stepPath)} className={`hover:text-white ${index === arr.length - 1 ? 'text-white font-bold' : ''}`}>{part}</button></React.Fragment>);
                                                     })}
                                                 </div>
-                                                {currentFolders.length > 0 && (
-                                                    <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-4 mb-8">
-                                                        {currentFolders.map((folder) => (<FolderCard key={folder.name} name={folder.name} count={folder.count} coverFile={folder.coverFile} onClick={() => { setCurrentPath(folder.fullPath); setSelectorPage(1); }} />))}
-                                                    </div>
-                                                )}
+                                                {currentFolders.length > 0 && (<div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-4 mb-8">{currentFolders.map((folder) => (<FolderCard key={folder.name} name={folder.name} count={folder.count} coverFile={folder.coverFile} onClick={() => { setCurrentPath(folder.fullPath); setSelectorPage(1); }} />))}</div>)}
                                                 {currentImages.length > 0 && (
                                                     <>
-                                                        <div className="text-xs font-bold text-zinc-500 uppercase mb-2">Images ({currentImages.length})</div>
-                                                        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
-                                                            {(() => {
-                                                                const validImages = currentImages.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f)));
-                                                                const totalPages = Math.ceil(validImages.length / ITEMS_PER_PAGE) || 1;
-                                                                const safePage = Math.min(Math.max(1, selectorPage), totalPages);
-                                                                if (safePage !== selectorPage) setSelectorPage(safePage);
-                                                                const start = (safePage - 1) * ITEMS_PER_PAGE;
-                                                                return validImages.slice(start, start + ITEMS_PER_PAGE).map((file, i) => (<ThumbnailItem key={getFileId(file)} file={file} thumbUrl={file.thumbUrl} index={i} showAddButton={true} onAdd={addToSession} onPreview={setPreviewFile} />));
-                                                            })()}
-                                                        </div>
-                                                    </>
-                                                )}
+                                                            <div className="text-xs font-bold text-zinc-500 uppercase mb-2">Images ({currentImages.length})</div>
+                                                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                                                                {(() => { 
+                                                                    const validImages = currentImages.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f))); 
+                                                                    const totalPages = Math.ceil(validImages.length / ITEMS_PER_PAGE) || 1; 
+                                                                    const safePage = Math.min(Math.max(1, selectorPage), totalPages); 
+                                                                    if (safePage !== selectorPage) setSelectorPage(safePage); 
+                                                                    const start = (safePage - 1) * ITEMS_PER_PAGE; 
+                                                                    
+                                                                    return validImages.slice(start, start + ITEMS_PER_PAGE).map((file, i) => (
+                                                                        <ThumbnailItem 
+                                                                            key={getFileId(file)} 
+                                                                            file={file} 
+                                                                            thumbUrl={file.thumbUrl} 
+                                                                            index={i} 
+                                                                            showAddButton={true} 
+                                                                            onAdd={addToSession} 
+                                                                            onPreview={setPreviewFile}
+                                                                            // ✅ 新增：显示黑白已画状态
+                                                                            isDrawn={drawnHistory.has(getFileId(file))}
+                                                                            // ✅ 新增：允许直接点击右下角标记
+                                                                            onToggleDrawn={toggleDrawn}
+                                                                        />
+                                                                    )); 
+                                                                })()}
+                                                            </div>
+                                                        </>
+                                                    )}
                                                 {currentFolders.length === 0 && currentImages.length === 0 && <div className="text-center text-zinc-500 py-20">此文件夹为空</div>}
                                             </div>
                                         ) : (
-                                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
-                                                {(() => {
-                                                    const validFiles = globalFiles.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f)));
-                                                    const totalPages = Math.ceil(validFiles.length / ITEMS_PER_PAGE) || 1;
-                                                    const safePage = Math.min(Math.max(1, selectorPage), totalPages);
-                                                    if (safePage !== selectorPage) setSelectorPage(safePage);
-                                                    const start = (safePage - 1) * ITEMS_PER_PAGE;
-                                                    return validFiles.slice(start, start + ITEMS_PER_PAGE).map((file, i) => (<ThumbnailItem key={getFileId(file)} file={file} thumbUrl={file.thumbUrl} index={i} showAddButton={true} onAdd={addToSession} onPreview={setPreviewFile} />));
-                                                })()}
-                                            </div>
+                                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">{(() => { const validFiles = globalFiles.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f))); const totalPages = Math.ceil(validFiles.length / ITEMS_PER_PAGE) || 1; const safePage = Math.min(Math.max(1, selectorPage), totalPages); if (safePage !== selectorPage) setSelectorPage(safePage); const start = (safePage - 1) * ITEMS_PER_PAGE; return validFiles.slice(start, start + ITEMS_PER_PAGE).map((file, i) => (
+                                                <ThumbnailItem 
+                                                    key={getFileId(file)} 
+                                                    file={file} 
+                                                    thumbUrl={file.thumbUrl} 
+                                                    index={i} 
+                                                    showAddButton={true} 
+                                                    onAdd={addToSession} 
+                                                    onPreview={setPreviewFile} 
+                                                    // 👇 新增这就两行
+                                                    isDrawn={drawnHistory.has(getFileId(file))}
+                                                    onToggleDrawn={toggleDrawn}
+                                                />
+                                            ));
+                                         })()}</div>
                                         )}
                                     </div>
-
                                     <div className="p-4 border-t border-zinc-800 bg-zinc-900 rounded-b-xl grid grid-cols-3 items-center">
                                         <div></div>
-                                        <div className="flex justify-center items-center gap-4 text-sm">
-                                            {(() => {
-                                                let sourceCount = 0;
-                                                if (viewMode === 'grid') { sourceCount = globalFiles.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f))).length; } 
-                                                else { sourceCount = currentImages.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f))).length; }
-                                                const totalPages = Math.ceil(sourceCount / ITEMS_PER_PAGE) || 1;
-                                                if (sourceCount <= ITEMS_PER_PAGE) return <span className="text-zinc-500 text-xs">共 {totalPages} 页</span>;
-                                                return (<><button disabled={selectorPage === 1} onClick={() => setSelectorPage(p => p - 1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronLeft size={18}/></button><span className="text-zinc-300 font-mono font-bold min-w-[60px] text-center">{selectorPage} <span className="text-zinc-600 font-normal">/</span> {totalPages}</span><button disabled={selectorPage >= totalPages} onClick={() => setSelectorPage(p => p + 1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronRight size={18}/></button></>);
-                                            })()}
-                                        </div>
+                                        <div className="flex justify-center items-center gap-4 text-sm">{(() => { let sourceCount = 0; if (viewMode === 'grid') { sourceCount = globalFiles.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f))).length; } else { sourceCount = currentImages.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f))).length; } const totalPages = Math.ceil(sourceCount / ITEMS_PER_PAGE) || 1; if (sourceCount <= ITEMS_PER_PAGE) return <span className="text-zinc-500 text-xs">共 {totalPages} 页</span>; return (<><button disabled={selectorPage === 1} onClick={() => setSelectorPage(p => p - 1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronLeft size={18}/></button><span className="text-zinc-300 font-mono font-bold min-w-[60px] text-center">{selectorPage} <span className="text-zinc-600 font-normal">/</span> {totalPages}</span><button disabled={selectorPage >= totalPages} onClick={() => setSelectorPage(p => p + 1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronRight size={18}/></button></>); })()}</div>
                                         <div className="flex justify-end"><button onClick={() => setShowLibrarySelector(false)} className="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-lg shadow-blue-900/20">完成</button></div>
                                     </div>
                                 </div>
@@ -1242,88 +1956,174 @@
                         )}
 
                         {showListManager && (
-                            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
-                                <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-6xl shadow-2xl flex flex-col h-[85vh]">
-                                    <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
-                                        <div className="flex items-center gap-4">
-                                            <h3 className="font-bold text-lg">图片管理</h3>
-                                            <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800">
-                                                <button onClick={() => { setViewMode('grid'); setCurrentPath(""); }} className={`px-3 py-1 text-xs rounded-md flex items-center gap-2 transition-all ${viewMode === 'grid' ? 'bg-zinc-800 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutGrid size={14}/> 全部</button>
-                                                <button onClick={() => { setViewMode('folder'); setCurrentPath(""); }} className={`px-3 py-1 text-xs rounded-md flex items-center gap-2 transition-all ${viewMode === 'folder' ? 'bg-zinc-800 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}><Folder size={14}/> 文件夹</button>
-                                            </div>
-                                        </div>
-                                        <div className="flex items-center gap-3"><div className="text-sm text-zinc-400 bg-zinc-800 px-3 py-1 rounded-full">共 {globalFiles.length} 张</div><button onClick={() => {setShowListManager(false); setManagerPage(1);}}><X size={24} className="text-zinc-400 hover:text-white"/></button></div>
-                                    </div>
-                                    <div className="p-6 flex-1 overflow-y-auto bg-zinc-950/50" onClick={() => setSelectedIndices(new Set())}>
-                                        {viewMode === 'folder' ? (
-                                            <div className="space-y-6">
-                                                <div className="flex items-center gap-2 text-sm text-zinc-400 mb-4">
-                                                    <button onClick={() => setCurrentPath("")} className={`hover:text-white ${!currentPath ? 'text-white font-bold' : ''}`}>根目录</button>
-                                                    {currentPath.split('/').filter(Boolean).map((part, index, arr) => {
-                                                        const stepPath = arr.slice(0, index + 1).join('/') + '/';
-                                                        return (<React.Fragment key={stepPath}><ChevronRight size={14}/><button onClick={() => setCurrentPath(stepPath)} className={`hover:text-white ${index === arr.length - 1 ? 'text-white font-bold' : ''}`}>{part}</button></React.Fragment>);
-                                                    })}
-                                                </div>
-                                                {currentFolders.length > 0 && (<div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-4 mb-8">{currentFolders.map((folder) => (<FolderCard key={folder.name} name={folder.name} count={folder.count} coverFile={folder.coverFile} onClick={(e) => { e.stopPropagation(); setCurrentPath(folder.fullPath); setManagerPage(1); }} />))}</div>)}
-                                                {currentImages.length > 0 && (<><div className="text-xs font-bold text-zinc-500 uppercase mb-2">Images ({currentImages.length})</div><div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">{(() => { const totalPages = Math.ceil(currentImages.length / ITEMS_PER_PAGE) || 1; const safePage = Math.min(Math.max(1, managerPage), totalPages); if (safePage !== managerPage) setManagerPage(safePage); const start = (safePage - 1) * ITEMS_PER_PAGE; return currentImages.slice(start, start + ITEMS_PER_PAGE).map((file, i) => { const globalIndex = globalFiles.indexOf(file); return (<ThumbnailItem key={getFileId(file)} file={file} thumbUrl={file.thumbUrl} index={i} isSelected={selectedIndices.has(globalIndex)} onClick={(e) => handleSelect(e, globalIndex)} isDrawn={drawnHistory.has(getFileId(file))} onToggleDrawn={toggleDrawn} onRemove={() => removeGlobalFile(globalIndex)} onPreview={setPreviewFile} onDragStart={onDragStart} onDrop={(e, dropIdx) => onDropEnhanced(e, dropIdx, true)} onDragOver={onDragOver} />); }); })()}</div></>)}
-                                                {currentFolders.length === 0 && currentImages.length === 0 && <div className="text-center text-zinc-500 py-20">此文件夹为空</div>}
-                                            </div>
-                                        ) : (
-                                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
-                                                {(() => { const totalPages = Math.ceil(globalFiles.length / ITEMS_PER_PAGE) || 1; const safePage = Math.min(Math.max(1, managerPage), totalPages); if (safePage !== managerPage) setManagerPage(safePage); const start = (safePage - 1) * ITEMS_PER_PAGE; return globalFiles.slice(start, start + ITEMS_PER_PAGE).map((file, i) => { const globalIndex = start + i; return (<ThumbnailItem key={getFileId(file)} file={file} thumbUrl={file.thumbUrl} index={i} isSelected={selectedIndices.has(globalIndex)} onClick={(e) => handleSelect(e, globalIndex)} isDrawn={drawnHistory.has(getFileId(file))} onToggleDrawn={toggleDrawn} onRemove={() => removeGlobalFile(globalIndex)} onPreview={setPreviewFile} onDragStart={onDragStart} onDrop={(e, dropIdx) => onDropEnhanced(e, dropIdx, true)} onDragOver={onDragOver} />); }); })()}
-                                            </div>
-                                        )}
-                                    </div>
-                                    {selectedIndices.size > 0 && (<div className="absolute bottom-20 left-0 right-0 flex justify-center z-30 pointer-events-none animate-in slide-in-from-bottom-4 fade-in duration-200"><div className="bg-zinc-800 border border-zinc-700 shadow-2xl rounded-full px-6 py-3 flex items-center gap-4 pointer-events-auto"><div className="text-sm font-bold text-white border-r border-zinc-600 pr-4 mr-2">已选 {selectedIndices.size} 张</div>{(() => { const allMarked = Array.from(selectedIndices).every(idx => drawnHistory.has(getFileId(globalFiles[idx]))); return (<button onClick={() => batchMarkDrawn(!allMarked)} className={`flex items-center gap-1 text-xs transition-colors ${allMarked ? 'text-zinc-300 hover:text-zinc-100' : 'text-green-400 hover:text-green-300'}`} title={allMarked ? "全部设为未画" : "全部设为已画"}>{allMarked ? <><Circle size={14} /> 取消标记</> : <><CheckCircle size={14} /> 标记已画</>}</button>); })()}<div className="w-px h-4 bg-zinc-600 mx-1"></div><button onClick={deleteSelected} className="flex items-center gap-1 text-xs text-red-400 hover:text-red-200 transition-colors bg-red-900/20 px-3 py-1.5 rounded-full hover:bg-red-900/40"><Trash2 size={14} /> 删除选中</button><button onClick={() => setSelectedIndices(new Set())} className="ml-2 text-zinc-500 hover:text-zinc-300"><X size={16}/></button></div></div>)}
-                                    <div className="p-4 border-t border-zinc-800 bg-zinc-900 rounded-b-xl grid grid-cols-3 items-center">
-                                        <div className="flex justify-start"><button onClick={() => { if(confirm("确定清空所有图片吗？")) setGlobalFiles([]); }} className="px-3 py-1.5 rounded-lg text-xs bg-red-900/20 text-red-400 hover:bg-red-900/40 flex items-center gap-2 border border-red-900/30 transition-colors"><Trash2 size={14}/> 清空库</button></div>
-                                        <div className="flex justify-center items-center gap-4 text-sm">{(() => { const count = viewMode === 'grid' ? globalFiles.length : currentImages.length; const totalPages = Math.ceil(count / ITEMS_PER_PAGE) || 1; if (count <= ITEMS_PER_PAGE) return <span className="text-zinc-500 text-xs">共 {totalPages} 页</span>; return (<><button disabled={managerPage === 1} onClick={()=>setManagerPage(p=>p-1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronLeft size={18}/></button><span className="text-zinc-300 font-mono font-bold min-w-[60px] text-center">{managerPage} <span className="text-zinc-600 font-normal">/</span> {totalPages}</span><button disabled={managerPage >= totalPages} onClick={()=>setManagerPage(p=>p+1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronRight size={18}/></button></>); })()}</div>
-                                        <div className="flex justify-end"><button onClick={() => {setShowListManager(false); setManagerPage(1);}} className="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-lg shadow-blue-900/20">确认完成</button></div>
-                                    </div>
+                <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200" onClick={() => setSelectedIndices(new Set())}>
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-6xl shadow-2xl flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
+                        
+                        {/* 标题栏 */}
+                        <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
+                            <div className="flex items-center gap-4">
+                                <h3 className="font-bold text-lg">图片管理</h3>
+                                <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+                                    <button onClick={() => { setViewMode('grid'); setCurrentPath(""); setManagerPage(1); }} className={`px-3 py-1 text-xs rounded-md flex items-center gap-2 transition-all ${viewMode === 'grid' ? 'bg-zinc-800 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutGrid size={14}/> 全部</button>
+                                    <button onClick={() => { setViewMode('folder'); setCurrentPath(""); setManagerPage(1); }} className={`px-3 py-1 text-xs rounded-md flex items-center gap-2 transition-all ${viewMode === 'folder' ? 'bg-zinc-800 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}><Folder size={14}/> 文件夹</button>
                                 </div>
                             </div>
-                        )}
+                            <div className="flex items-center gap-3">
+                                <div className="text-sm text-zinc-400 bg-zinc-800 px-3 py-1 rounded-full">共 {globalFiles.length} 张</div>
+                                <button onClick={() => {setShowListManager(false); setManagerPage(1); setSelectedIndices(new Set());}}><X size={24} className="text-zinc-400 hover:text-white"/></button>
+                            </div>
+                        </div>
 
-                        {showSessionPreview && pendingSessionQueue && (
-                            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
-                                <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-5xl shadow-2xl flex flex-col h-[85vh]">
-                                    <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
-                                        <div className="flex items-center gap-3"><LayoutGrid size={20} className="text-indigo-400"/> <div><h3 className="font-bold text-lg">本次练习队列预览</h3><p className="text-xs text-zinc-500">拖拽可排序，自由增删</p></div></div>
-                                        <div className="flex items-center gap-3"><div className="text-sm text-zinc-400 bg-zinc-800 px-3 py-1 rounded-full">共 {pendingSessionQueue.length} 张</div><button onClick={() => setShowSessionPreview(false)}><X size={24} className="text-zinc-400 hover:text-white"/></button></div>
+                        {/* 列表内容区 */}
+                        <div className="p-6 flex-1 overflow-y-auto bg-zinc-950/50" onClick={() => setSelectedIndices(new Set())}>
+                            {viewMode === 'folder' ? (
+                                <div className="space-y-6">
+                                    {/* 面包屑导航 */}
+                                    <div className="flex items-center gap-2 text-sm text-zinc-400 mb-4">
+                                        <button onClick={() => setCurrentPath("")} className={`hover:text-white ${!currentPath ? 'text-white font-bold' : ''}`}>根目录</button>
+                                        {currentPath.split('/').filter(Boolean).map((part, index, arr) => {
+                                            const stepPath = arr.slice(0, index + 1).join('/') + '/';
+                                            return (<React.Fragment key={stepPath}><ChevronRight size={14}/><button onClick={() => setCurrentPath(stepPath)} className={`hover:text-white ${index === arr.length - 1 ? 'text-white font-bold' : ''}`}>{part}</button></React.Fragment>);
+                                        })}
                                     </div>
-                                    <div className="p-6 flex-1 overflow-y-auto bg-zinc-950/50">
+
+                                    {/* 文件夹显示 */}
+                                    {currentFolders.length > 0 && (
+                                        // 修改为和 showListManager 一致的 3-4-5-6 列布局，并将 gap 增加到 4
                                         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
-                                            {pendingSessionQueue.map((item, i) => (
-                                                <div key={i} draggable onDragStart={(e) => onPreviewDragStart(e, i)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onPreviewDrop(e, i)} className="relative group aspect-square rounded-lg border border-zinc-800 bg-zinc-900 overflow-hidden cursor-grab active:cursor-grabbing">
-                                                    {item.file.thumbUrl ? (<img src={item.file.thumbUrl} loading="lazy" className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity pointer-events-none"/>) : (<div className="w-full h-full flex items-center justify-center text-zinc-700"><div className="animate-pulse"><ImageIcon size={24} className="opacity-20"/></div></div>)}
-                                                    <div className="absolute top-1 right-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">{item.duration}s</div>
-                                                    {item.stageIndex && <div className="absolute top-1 left-1 bg-blue-900/80 text-blue-200 text-[10px] px-1.5 py-0.5 rounded">S{item.stageIndex}</div>}
-                                                    <div className="absolute inset-0 flex items-center justify-center gap-2 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                        <button onClick={() => setPreviewFile(item.file)} className="p-2 bg-zinc-800 rounded-full text-zinc-200 hover:text-white hover:bg-blue-600 transition-colors" title="预览"><Eye size={20}/></button>
-                                                        {item.file.path && (<button onClick={() => window.electronAPI?.showItemInFolder?.(item.file.path)} className="p-2 bg-zinc-800 rounded-full text-zinc-200 hover:text-white hover:bg-zinc-600 transition-colors" title="在文件夹中显示"><Folder size={20}/></button>)}
-                                                        <button onClick={() => removePreviewItem(i)} className="p-2 bg-zinc-800 rounded-full text-red-400 hover:text-red-200 hover:bg-red-900/80 transition-colors" title="移除"><Trash2 size={20}/></button>
-                                                    </div>
-                                                </div>
+                                            {currentFolders.map((folder) => (
+                                                <FolderCard 
+                                                    key={folder.name} 
+                                                    name={folder.name} 
+                                                    count={folder.count} 
+                                                    coverFile={folder.coverFile} 
+                                                    onClick={(e) => { e.stopPropagation(); setCurrentPath(folder.fullPath); setManagerPage(1); }} 
+                                                />
                                             ))}
                                         </div>
-                                    </div>
-                                    <div className="p-4 border-t border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-b-xl">
-                                        <div className="flex gap-3">
-                                            <button onClick={regeneratePreview} className="px-4 py-2 rounded-lg text-sm bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700 flex items-center gap-2"><RefreshCw size={16}/> 重置/随机</button>
-                                            <button onClick={replenishPreview} className="px-4 py-2 rounded-lg text-sm bg-zinc-800 text-green-400 hover:bg-zinc-700 border border-zinc-700 flex items-center gap-2"><Plus size={16}/> 自动补足</button>
-                                            <button onClick={() => setShowLibrarySelector(true)} className="px-4 py-2 rounded-lg text-sm bg-zinc-800 text-blue-400 hover:bg-zinc-700 border border-zinc-700 flex items-center gap-2"><ImageIcon size={16}/> 手动添加</button>
-                                        </div>
-                                        <button onClick={() => { launchQueue(pendingSessionQueue); setShowSessionPreview(false); }} className="px-8 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow-lg shadow-indigo-900/20 flex items-center gap-2"><Play size={18} fill="currentColor"/> 开始练习</button>
-                                    </div>
+                                    )}
+
+                                    {/* 图片显示 (文件夹模式) */}
+                                    {currentImages.length > 0 && (
+                                        <>
+                                            <div className="text-xs font-bold text-zinc-500 uppercase mb-2">Images ({currentImages.length})</div>
+                                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                                                {(() => { 
+                                                    const totalPages = Math.ceil(currentImages.length / ITEMS_PER_PAGE) || 1; 
+                                                    const safePage = Math.min(Math.max(1, managerPage), totalPages); 
+                                                    if (safePage !== managerPage) setManagerPage(safePage); 
+                                                    const start = (safePage - 1) * ITEMS_PER_PAGE; 
+                                                    
+                                                    return currentImages.slice(start, start + ITEMS_PER_PAGE).map((file, i) => { 
+                                                        const globalIndex = globalFiles.indexOf(file); 
+                                                        return (
+                                                            <ThumbnailItem 
+                                                                key={getFileId(file)}
+                                                                file={file}
+                                                                // ✅ 核心修复：只使用 thumbUrl。如果是大图，等待 Worker 生成；如果是小图，Worker 会瞬间生成。
+                                                                thumbUrl={file.thumbUrl}
+                                                                index={i} 
+                                                                isSelected={selectedIndices.has(globalIndex)} 
+                                                                onClick={(e) => handleSelect(e, globalIndex)} 
+                                                                isDrawn={drawnHistory.has(getFileId(file))} 
+                                                                onToggleDrawn={toggleDrawn} 
+                                                                onRemove={() => removeGlobalFile(globalIndex)}
+                                                                onPreview={setPreviewFile} 
+                                                                onDragStart={onDragStart} 
+                                                                onDrop={(e, dropIdx) => onDropEnhanced(e, dropIdx, true)} 
+                                                                onDragOver={onDragOver} 
+                                                            />
+                                                        ); 
+                                                    }); 
+                                                })()}
+                                            </div>
+                                        </>
+                                    )}
+                                    {currentFolders.length === 0 && currentImages.length === 0 && <div className="text-center text-zinc-500 py-20">此文件夹为空</div>}
+                                </div>
+                            ) : (
+                                /* 图片显示 (全部网格模式) */
+                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                                    {(() => { 
+                                        const totalPages = Math.ceil(globalFiles.length / ITEMS_PER_PAGE) || 1; 
+                                        const safePage = Math.min(Math.max(1, managerPage), totalPages); 
+                                        if (safePage !== managerPage) setManagerPage(safePage); 
+                                        const start = (safePage - 1) * ITEMS_PER_PAGE; 
+                                        
+                                        return globalFiles.slice(start, start + ITEMS_PER_PAGE).map((file, i) => { 
+                                            const globalIndex = start + i; 
+                                            return (
+                                                <ThumbnailItem 
+                                                    key={getFileId(file)} 
+                                                    file={file} 
+                                                    // ✅ 核心修复：只使用 thumbUrl，避免卡顿
+                                                    thumbUrl={file.thumbUrl}
+                                                    index={i} 
+                                                    isSelected={selectedIndices.has(globalIndex)} 
+                                                    onClick={(e) => handleSelect(e, globalIndex)} 
+                                                    isDrawn={drawnHistory.has(getFileId(file))} 
+                                                    onToggleDrawn={toggleDrawn} 
+                                                    onRemove={() => removeGlobalFile(globalIndex)} 
+                                                    onPreview={setPreviewFile} 
+                                                    onDragStart={onDragStart} 
+                                                    onDrop={(e, dropIdx) => onDropEnhanced(e, dropIdx, true)} 
+                                                    onDragOver={onDragOver} 
+                                                />
+                                            ); 
+                                        }); 
+                                    })()}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* 底部悬浮操作栏 (多选时显示) */}
+                        {selectedIndices.size > 0 && (
+                            <div className="absolute bottom-20 left-0 right-0 flex justify-center z-30 pointer-events-none animate-in slide-in-from-bottom-4 fade-in duration-200">
+                                <div className="bg-zinc-800 border border-zinc-700 shadow-2xl rounded-full px-6 py-3 flex items-center gap-4 pointer-events-auto">
+                                    <div className="text-sm font-bold text-white border-r border-zinc-600 pr-4 mr-2">已选 {selectedIndices.size} 张</div>
+                                    {(() => { 
+                                        const allMarked = Array.from(selectedIndices).every(idx => drawnHistory.has(getFileId(globalFiles[idx]))); 
+                                        return (
+                                            <button onClick={() => batchMarkDrawn(!allMarked)} className={`flex items-center gap-1 text-xs transition-colors ${allMarked ? 'text-zinc-300 hover:text-zinc-100' : 'text-green-400 hover:text-green-300'}`} title={allMarked ? "全部设为未画" : "全部设为已画"}>
+                                                {allMarked ? <><Circle size={14} /> 取消标记</> : <><CheckCircle size={14} /> 标记已画</>}
+                                            </button>
+                                        ); 
+                                    })()}
+                                    <div className="w-px h-4 bg-zinc-600 mx-1"></div>
+                                    <button onClick={deleteSelected} className="flex items-center gap-1 text-xs text-red-400 hover:text-red-200 transition-colors bg-red-900/20 px-3 py-1.5 rounded-full hover:bg-red-900/40">
+                                        <Trash2 size={14} /> 删除选中
+                                    </button>
+                                    <button onClick={() => setSelectedIndices(new Set())} className="ml-2 text-zinc-500 hover:text-zinc-300"><X size={16}/></button>
                                 </div>
                             </div>
                         )}
 
-                        {showConflictModal && (<div className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"><div className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-md w-full p-6 shadow-2xl shadow-yellow-900/10"><div className="flex items-center gap-3 text-yellow-500 mb-4"><div className="p-2 bg-yellow-500/10 rounded-full"><CheckCircle size={24} /></div><h3 className="text-xl font-bold text-zinc-100">包含已画图片</h3></div><p className="text-zinc-400 mb-8 text-sm leading-relaxed">当前的练习队列中包含了 <strong className="text-zinc-200">{pendingSessionQueue?.filter(i => drawnHistory.has(getFileId(i.file))).length}</strong> 张你之前标记为“已画”的图片。<br/><br/>你想跳过它们，还是重新练习一遍？</p><div className="grid grid-cols-2 gap-3"><button onClick={() => handleConflictChoice('exclude')} className="py-3 bg-zinc-800 hover:bg-zinc-700 hover:text-white text-zinc-300 rounded-lg font-medium border border-zinc-700 transition-colors flex items-center justify-center gap-2"><SkipForward size={16}/> 跳过已画</button><button onClick={() => handleConflictChoice('include')} className="py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium shadow-lg shadow-blue-900/20 transition-colors flex items-center justify-center gap-2"><Play size={16} fill="currentColor"/> 全部练习</button></div><button onClick={() => setShowConflictModal(false)} className="w-full mt-4 py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">取消，我再调整一下</button></div></div>)}
-
-                        {showUnsavedModal && (<div className="fixed inset-0 z-[120] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"><div className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-sm w-full p-6 shadow-2xl shadow-red-900/10"><div className="flex items-center gap-3 mb-4 text-amber-500"><AlertCircle size={24} /><h3 className="text-lg font-bold text-zinc-100">设置未保存</h3></div><p className="text-zinc-400 text-sm mb-6 leading-relaxed">当前预设的设置或图片列表已发生更改。在切换或退出前，需要保存吗？</p><div className="space-y-3"><button onClick={saveCurrentPreset} className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm shadow-lg shadow-purple-900/20 transition-all">保存并继续</button><button onClick={() => { if (pendingAction) { executeAction(pendingAction.type, pendingAction.payload); } else { window.electronAPI?.forceClose(); } setPendingAction(null); setShowUnsavedModal(false); }} className="w-full py-3 bg-zinc-800 hover:bg-red-900/20 hover:text-red-400 text-zinc-300 rounded-lg font-medium text-sm border border-zinc-700 transition-all">不保存 (丢弃修改)</button><button onClick={() => { setPendingAction(null); setShowUnsavedModal(false); }} className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">取消</button></div></div></div>)}
-
-                        {presetToDelete && (<div className="fixed inset-0 z-[130] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"><div className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-sm w-full p-6 shadow-2xl shadow-red-900/10"><div className="flex items-center gap-3 mb-4 text-red-500"><Trash2 size={24} /><h3 className="text-lg font-bold text-zinc-100">删除预设</h3></div><p className="text-zinc-400 text-sm mb-6 leading-relaxed">确定要永久删除此预设吗？此操作无法撤销。</p><div className="grid grid-cols-2 gap-3"><button onClick={() => setPresetToDelete(null)} className="py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-medium transition-colors">取消</button><button onClick={performDeletePreset} className="py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm font-bold shadow-lg shadow-red-900/20 transition-colors">确认删除</button></div></div></div>)}
+                        {/* 底部栏 */}
+                        <div className="p-4 border-t border-zinc-800 bg-zinc-900 rounded-b-xl grid grid-cols-3 items-center">
+                            <div className="flex justify-start">
+                                <button onClick={() => { if(confirm("确定清空所有图片吗？")) setGlobalFiles([]); }} className="px-3 py-1.5 rounded-lg text-xs bg-red-900/20 text-red-400 hover:bg-red-900/40 flex items-center gap-2 border border-red-900/30 transition-colors"><Trash2 size={14}/> 清空库</button>
+                            </div>
+                            <div className="flex justify-center items-center gap-4 text-sm">
+                                {(() => { 
+                                    const count = viewMode === 'grid' ? globalFiles.length : currentImages.length; 
+                                    const totalPages = Math.ceil(count / ITEMS_PER_PAGE) || 1; 
+                                    if (count <= ITEMS_PER_PAGE) return <span className="text-zinc-500 text-xs">共 {totalPages} 页</span>; 
+                                    return (
+                                        <>
+                                            <button disabled={managerPage === 1} onClick={()=>setManagerPage(p=>p-1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronLeft size={18}/></button>
+                                            <span className="text-zinc-300 font-mono font-bold min-w-[60px] text-center">{managerPage} <span className="text-zinc-600 font-normal">/</span> {totalPages}</span>
+                                            <button disabled={managerPage >= totalPages} onClick={()=>setManagerPage(p=>p+1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronRight size={18}/></button>
+                                        </>
+                                    ); 
+                                })()}
+                            </div>
+                            <div className="flex justify-end">
+                                <button onClick={() => {setShowListManager(false); setManagerPage(1); setSelectedIndices(new Set());}} className="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-lg shadow-blue-900/20">确认完成</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
                         {/* 9. 阶段图片管理 (优化排版 + 修复缩略图) */}
                         {managingStageIndex !== null && (
@@ -1394,7 +2194,51 @@
                                 </div>
                             </div>
                         )}
-                        
+                        {showUnsavedModal && (
+                            <div className="fixed inset-0 z-[100000] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => e.stopPropagation()}>
+                                <div className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-sm w-full p-6 shadow-2xl shadow-red-900/10">
+                                    <div className="flex items-center gap-3 mb-4 text-amber-500">
+                                        <AlertCircle size={24} />
+                                        <h3 className="text-lg font-bold text-zinc-100">设置未保存</h3>
+                                    </div>
+                                    <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
+                                        {currentPresetId ? `预设 "${presets.find(p => p.id === currentPresetId)?.name}" 已发生更改。` : "当前【默认配置】已发生更改。"}
+                                        <br/>在切换或退出前，需要保存吗？
+                                    </p>
+                                    <div className="space-y-3">
+                                        <button 
+                                            onClick={saveCurrentPreset} 
+                                            className={`w-full py-3 text-white rounded-lg font-bold text-sm shadow-lg transition-all ${currentPresetId ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20' : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'}`}
+                                        >
+                                            {currentPresetId ? "保存并继续" : "无法覆盖默认配置 (点击查看)"}
+                                        </button>
+
+                                        <button onClick={() => { 
+                                            if (pendingAction) { 
+                                                executeAction(pendingAction.type, pendingAction.payload); 
+                                            } else { 
+                                                if (window.electronAPI && window.electronAPI.forceClose) {
+                                                    window.electronAPI.forceClose();
+                                                } else {
+                                                    window.close();
+                                                }
+                                            } 
+                                            setPendingAction(null); 
+                                            setShowUnsavedModal(false); 
+                                        }} className="w-full py-3 bg-zinc-800 hover:bg-red-900/20 hover:text-red-400 text-zinc-300 rounded-lg font-medium text-sm border border-zinc-700 transition-all">
+                                            不保存 (丢弃修改)
+                                        </button>
+
+                                        <button onClick={() => { 
+                                            setPendingAction(null); 
+                                            setShowUnsavedModal(false); 
+                                        }} className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
+                                            取消
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 );
             }
@@ -1518,27 +2362,57 @@
                         </div>
                    )}
 
+                   {/* ✅ 修复：未保存提示框 (层级调至最高 z-[100000]，防止被预设管理器遮挡) */}
                    {showUnsavedModal && (
-                        <div className="fixed inset-0 z-[100000] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+                        <div className="fixed inset-0 z-[100000] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => e.stopPropagation()}>
                             <div className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-sm w-full p-6 shadow-2xl shadow-red-900/10">
                                 <div className="flex items-center gap-3 mb-4 text-amber-500">
                                     <AlertCircle size={24} />
                                     <h3 className="text-lg font-bold text-zinc-100">设置未保存</h3>
                                 </div>
-                                <p className="text-zinc-400 text-sm mb-6 leading-relaxed">当前预设的设置或图片列表已发生更改。在切换或退出前，需要保存吗？</p>
+                                <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
+                                    {currentPresetId ? `预设 "${presets.find(p => p.id === currentPresetId)?.name}" 已发生更改。` : "当前【默认配置】已发生更改。"}
+                                    <br/>在切换或退出前，需要保存吗？
+                                </p>
                                 <div className="space-y-3">
-                                    <button onClick={saveCurrentPreset} className="w-full py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm shadow-lg shadow-purple-900/20 transition-all">保存并继续</button>
+                                    {/* 保存按钮：如果是默认配置，显示灰色或提示用户 */}
+                                    <button 
+                                        onClick={saveCurrentPreset} 
+                                        className={`w-full py-3 text-white rounded-lg font-bold text-sm shadow-lg transition-all ${currentPresetId ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20' : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'}`}
+                                    >
+                                        {currentPresetId ? "保存并继续" : "无法覆盖默认配置 (点击查看)"}
+                                    </button>
+
+                                    {/* 不保存按钮：【修复 2】增加 window.close() 作为回退方案 */}
                                     <button onClick={() => { 
-                                        if (pendingAction) { executeAction(pendingAction.type, pendingAction.payload); } 
-                                        else { window.electronAPI?.forceClose(); } 
+                                        // 丢弃修改：直接执行之前挂起的操作
+                                        if (pendingAction) { 
+                                            executeAction(pendingAction.type, pendingAction.payload); 
+                                        } else { 
+                                            // 尝试 Electron 关闭，如果失败则尝试浏览器关闭
+                                            if (window.electronAPI && window.electronAPI.forceClose) {
+                                                window.electronAPI.forceClose();
+                                            } else {
+                                                window.close(); // 浏览器回退
+                                            }
+                                        } 
                                         setPendingAction(null); 
                                         setShowUnsavedModal(false); 
-                                    }} className="w-full py-3 bg-zinc-800 hover:bg-red-900/20 hover:text-red-400 text-zinc-300 rounded-lg font-medium text-sm border border-zinc-700 transition-all">不保存 (丢弃修改)</button>
-                                    <button onClick={() => { setPendingAction(null); setShowUnsavedModal(false); }} className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">取消</button>
+                                    }} className="w-full py-3 bg-zinc-800 hover:bg-red-900/20 hover:text-red-400 text-zinc-300 rounded-lg font-medium text-sm border border-zinc-700 transition-all">
+                                        不保存 (丢弃修改)
+                                    </button>
+
+                                    <button onClick={() => { 
+                                        // 取消：什么都不做，留在这个页面
+                                        setPendingAction(null); 
+                                        setShowUnsavedModal(false); 
+                                    }} className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
+                                        取消
+                                    </button>
                                 </div>
                             </div>
                         </div>
-                   )}
+                    )}
                 </div>
             );
         }
