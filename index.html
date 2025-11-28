@@ -393,32 +393,54 @@
             );
         });
 
-        // ⬇️ 复制下面的完整代码，替换你现在的 CustomTitleBar 组件
+        // ⬇️ 再次完全替换 CustomTitleBar 组件
         const CustomTitleBar = ({ appState, onClose }) => {
             const [isPinned, setIsPinned] = useState(false);
             const [mouseNearTop, setMouseNearTop] = useState(false);
             const [mouseOnBar, setMouseOnBar] = useState(false);
             
+            // 使用 Ref 追踪拖拽状态，防止闭包陷阱
+            const isDraggingRef = useRef(false);
+
             useEffect(() => {
                 let timer = null;
+
                 const handleMouseMove = (e) => {
-                    // 1. e.clientY < 100: 感应范围扩大到 100
-                    // 2. e.buttons === 1: 只要按住左键（拖拽中），绝对不隐藏
-                    if (e.clientY < 100 || e.buttons === 1) {
+                    // 1. 如果正在拖拽，死锁状态，不允许隐藏
+                    if (isDraggingRef.current) {
+                        setMouseNearTop(true);
+                        if (timer) { clearTimeout(timer); timer = null; }
+                        return;
+                    }
+
+                    // 2. 正常感应逻辑
+                    if (e.clientY < 100) {
                         setMouseNearTop(true);
                         if (timer) { clearTimeout(timer); timer = null; }
                     } else {
-                        // 3. 只有松开鼠标且离开顶部，才延迟 2秒 隐藏
-                        if (!timer) { timer = setTimeout(() => { setMouseNearTop(false); timer = null; }, 2000); }
+                        // 3. 离开感应区且没在拖拽，延迟隐藏
+                        if (!timer) {
+                            timer = setTimeout(() => {
+                                if (!isDraggingRef.current) { // 双重保险
+                                    setMouseNearTop(false);
+                                }
+                                timer = null;
+                            }, 1500); 
+                        }
                     }
                 };
-                
+
+                const handleGlobalMouseUp = () => { isDraggingRef.current = false; };
+                const handleBlur = () => { isDraggingRef.current = false; };
+
                 window.addEventListener('mousemove', handleMouseMove);
-                window.addEventListener('mouseup', handleMouseMove); // 防止拖出窗口外松开导致状态卡死
+                window.addEventListener('mouseup', handleGlobalMouseUp);
+                window.addEventListener('blur', handleBlur);
 
                 return () => { 
                     window.removeEventListener('mousemove', handleMouseMove); 
-                    window.removeEventListener('mouseup', handleMouseMove);
+                    window.removeEventListener('mouseup', handleGlobalMouseUp);
+                    window.removeEventListener('blur', handleBlur);
                     if (timer) clearTimeout(timer); 
                 };
             }, []);
@@ -431,9 +453,19 @@
                 <div 
                     onMouseEnter={() => setMouseOnBar(true)}
                     onMouseLeave={() => setMouseOnBar(false)}
-                    className={`fixed top-0 left-0 w-full h-10 z-[9999] flex justify-end items-center transition-all duration-300 ease-in-out border-b border-white/10 bg-black/90 backdrop-blur-md ${show ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'}`}
+                    // ⬇️ 修改重点：这里控制动画
+                    // 如果鼠标已经放上去了(mouseOnBar)，直接禁用 transition (变为 none)，让它瞬间对齐，不再移动。
+                    // 只有当鼠标离开(自动隐藏)时，才启用 duration-300 的平滑过渡。
+                    style={{ transition: mouseOnBar ? 'none' : 'all 0.3s ease-in-out' }}
+                    className={`fixed top-0 left-0 w-full h-10 z-[9999] flex justify-end items-center border-b border-white/10 bg-black/90 backdrop-blur-md ${show ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'}`}
                 >
-                    <div style={{WebkitAppRegion: 'drag'}} className="absolute inset-0 w-full h-full" />
+                    {/* 拖拽层：按下瞬间立即锁死状态 */}
+                    <div 
+                        style={{WebkitAppRegion: 'drag'}} 
+                        className="absolute inset-0 w-full h-full" 
+                        onMouseDown={() => { isDraggingRef.current = true; setMouseNearTop(true); }}
+                    />
+                    
                     <div className="relative z-20 flex items-center h-full mr-3 gap-2 ml-auto" style={{WebkitAppRegion: 'no-drag'}}>
                         <button onClick={togglePin} className={`p-1.5 rounded hover:bg-zinc-700 transition-colors cursor-pointer ${isPinned ? 'text-blue-400 bg-blue-500/10' : 'text-zinc-400'}`} title={isPinned ? "取消置顶" : "窗口置顶"}><Pin size={16} fill={isPinned ? "currentColor" : "none"} /></button>
                         <div className="w-px h-4 bg-zinc-700 mx-1"></div>
