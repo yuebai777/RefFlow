@@ -177,6 +177,7 @@
         const ChevronRight = (p) => <IconBase {...p}><path d="m9 18 6-6-6-6"></path></IconBase>;
         const Copy = (p) => <IconBase {...p}><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></IconBase>;
         const RefreshCw = (p) => <IconBase {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></IconBase>;
+        const Check = (p) => <IconBase {...p}><polyline points="20 6 9 17 4 12"></polyline></IconBase>;
 
         const copyImageToClipboard = async (file) => {
             try {
@@ -253,9 +254,63 @@
             return null;
         };
 
-        // 优化后的缩略图组件 (支持双击预览)
-        const ThumbnailItem = React.memo(({ file, thumbUrl, index, isDrawn, isSelected, onClick, onToggleDrawn, onRemove, onPreview, onDragStart, onDrop, onDragOver, showAddButton, onAdd }) => {
+        // ✅ 新增：带有交互反馈的文件夹操作层
+        const FolderActionOverlay = ({ folder, onAdd, onOpen }) => {
+            const [addState, setAddState] = useState('idle'); // 'idle' | 'success'
+
+            const handleAdd = (e) => {
+                e.stopPropagation();
+                onAdd(e);
+                setAddState('success');
+                // 1.5秒后恢复原状
+                setTimeout(() => setAddState('idle'), 1500);
+            };
+
+            return (
+                <div className="absolute inset-0 bg-black/80 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 rounded-xl pointer-events-none p-2 backdrop-blur-[2px]">
+                    {/* 按钮 1: 添加 (带反馈) */}
+                    <button 
+                        onClick={handleAdd}
+                        disabled={addState === 'success'}
+                        className={`pointer-events-auto w-full py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 shadow-lg transform active:scale-95 ${
+                            addState === 'success' 
+                                ? 'bg-green-600 text-white cursor-default' 
+                                : 'bg-blue-600 hover:bg-blue-500 text-white'
+                        }`}
+                        title={addState === 'success' ? "添加成功" : `将 "${folder.name}" 中的 ${folder.count} 张图片全部加入当前阶段`}
+                    >
+                        {addState === 'success' ? (
+                            <><Check size={14} strokeWidth={3} /> 已添加</>
+                        ) : (
+                            <><Plus size={14} /> 添加全部</>
+                        )}
+                    </button>
+
+                    {/* 按钮 2: 打开 */}
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onOpen(); }}
+                        className="pointer-events-auto w-full py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 text-xs rounded-lg transition-colors flex items-center justify-center gap-1 border border-zinc-600"
+                    >
+                        <FolderOpen size={14} /> 打开查看
+                    </button>
+                </div>
+            );
+        };
+
+        // 优化后的缩略图组件 (支持双击预览 + 添加/移除 + 已画标记)
+        const ThumbnailItem = React.memo(({ file, thumbUrl, index, isDrawn, isSelected, isAdded, onClick, onToggleDrawn, onRemove, onPreview, onDragStart, onDrop, onDragOver, showAddButton, onAdd, onRemoveFromStage }) => {
             const src = thumbUrl || file.thumbUrl;
+            
+            // 处理中间按钮点击：如果是已添加状态，则执行移除；否则执行添加
+            const handleAction = (e) => {
+                e.stopPropagation();
+                if (isAdded && onRemoveFromStage) {
+                    onRemoveFromStage(file);
+                } else if (!isAdded && onAdd) {
+                    onAdd(file);
+                }
+            };
+
             return (
                 <div 
                     draggable={!showAddButton} 
@@ -263,10 +318,13 @@
                     onDragOver={(e) => !showAddButton && onDragOver(e, index)} 
                     onDrop={(e) => !showAddButton && onDrop(e, index)} 
                     onClick={onClick}
-                    // ✅ 新增：双击直接预览
                     onDoubleClick={(e) => { e.stopPropagation(); onPreview && onPreview(file); }}
                     style={{ transform: 'translateZ(0)' }}
-                    className={`relative group aspect-square rounded-lg border overflow-hidden cursor-pointer ${isSelected ? 'border-blue-500 ring-2 ring-blue-500/30 bg-blue-900/20 z-10 scale-95' : isDrawn ? 'border-green-500/50 bg-zinc-900' : 'border-zinc-800 bg-zinc-900 hover:border-zinc-600'}`}
+                    className={`relative group aspect-square rounded-lg border overflow-hidden cursor-pointer ${
+                        isSelected ? 'border-blue-500 ring-2 ring-blue-500/30 bg-blue-900/20 z-10 scale-95' : 
+                        isAdded ? 'border-green-500 bg-green-900/10' : // ✅ 已添加状态：绿色边框
+                        isDrawn ? 'border-zinc-700 bg-zinc-900' : 'border-zinc-800 bg-zinc-900 hover:border-zinc-600'
+                    }`}
                 >
                     {src ? (
                         <img src={src} alt="thumb" loading="lazy" decoding="async" className={`w-full h-full object-cover pointer-events-none select-none transition-opacity duration-200 ${isDrawn ? 'opacity-40 grayscale' : 'opacity-100'}`} />
@@ -274,30 +332,52 @@
                         <div className="w-full h-full flex items-center justify-center text-zinc-700"><div className="animate-pulse"><ImageIcon size={24} className="opacity-20"/></div></div>
                     )}
                     
-                    {/* 添加模式 (主页列表) */}
+                    {/* 添加/移除模式 (鼠标悬浮显示) */}
                     {showAddButton && (
-                        <div className="absolute inset-0 bg-black/40 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-3">
-                             <button onClick={(e) => { e.stopPropagation(); onPreview(file); }} className="bg-zinc-800 hover:bg-blue-600 text-white p-2 rounded-full shadow-lg transform scale-90 group-hover:scale-110 transition-all" title="预览"><Eye size={20}/></button>
-                             <button onClick={(e) => { e.stopPropagation(); onAdd(file); }} className="bg-green-600 hover:bg-green-500 text-white p-2 rounded-full shadow-lg transform scale-90 group-hover:scale-110 transition-all" title="添加"><Plus size={20}/></button>
+                        <div className={`absolute inset-0 transition-colors flex items-center justify-center gap-3 ${isAdded ? 'bg-black/20 hover:bg-black/40' : 'bg-black/40 opacity-0 group-hover:opacity-100'}`}>
+                             {/* 预览按钮 */}
+                             <button onClick={(e) => { e.stopPropagation(); onPreview(file); }} className="bg-zinc-800 hover:bg-blue-600 text-white p-2 rounded-full shadow-lg transform scale-90 hover:scale-110 transition-all" title="预览"><Eye size={20}/></button>
+                             
+                             {/* ✅ 核心修改：中间的操作按钮 (添加/取消) */}
+                             <button 
+                                onClick={handleAction} 
+                                className={`p-2 rounded-full shadow-lg transform scale-100 hover:scale-110 transition-all flex items-center justify-center ${
+                                    isAdded 
+                                    ? 'bg-green-600 text-white hover:bg-red-600' // 已添加：绿色，悬浮变红(提示移除)
+                                    : 'bg-zinc-100 hover:bg-white text-black'    // 未添加：白色
+                                }`}
+                                title={isAdded ? "点击移除" : "点击添加"}
+                             >
+                                {isAdded ? <Check size={20} strokeWidth={3} /> : <Plus size={20}/>}
+                             </button>
                         </div>
                     )}
 
-                    {/* 选中标记 */}
+                    {/* 选中标记 (非添加模式) */}
                     {!showAddButton && isSelected && (<div className="absolute top-1 left-1 z-20 bg-blue-600 text-white rounded-full p-0.5 shadow-lg animate-in zoom-in duration-200"><IconBase size={12}><polyline points="20 6 9 17 4 12"></polyline></IconBase></div>)}
                     
-                    {/* 已画/未画 切换按钮 (右下角) */}
+                    {/* ✅ 已画/未画 切换按钮 (所有模式下都显示) */}
                     {onToggleDrawn && (
-                        <div className="absolute bottom-1 right-1 z-10">
-                            <button onClick={(e) => { e.stopPropagation(); onToggleDrawn(file); }} className={`p-1 rounded-full transition-all ${isDrawn ? 'text-green-500 bg-black/50' : 'text-zinc-600 bg-black/20 opacity-0 group-hover:opacity-100 hover:text-zinc-200'}`} title={isDrawn ? "设为未画" : "设为已画"}>{isDrawn ? <CheckCircle size={16} fill="currentColor" className="text-green-500 bg-green-900/20 rounded-full"/> : <Circle size={16}/>}</button>
+                        <div className="absolute bottom-1 right-1 z-20">
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); onToggleDrawn(file); }} 
+                                className={`p-1 rounded-full transition-all ${
+                                    isDrawn 
+                                    ? 'text-green-500 bg-black/60 shadow-md' 
+                                    : 'text-zinc-400 bg-black/40 hover:text-white hover:bg-black/60'
+                                } ${!isDrawn && showAddButton ? 'opacity-100' : (!isDrawn ? 'opacity-0 group-hover:opacity-100' : '')}`} 
+                                title={isDrawn ? "设为未画" : "设为已画"}
+                            >
+                                {isDrawn ? <CheckCircle size={16} fill="currentColor" className="text-green-500 bg-green-900/20 rounded-full"/> : <Circle size={16}/>}
+                            </button>
                         </div>
                     )}
-                    
-                    {/* 悬浮菜单 (预览/移除) */}
+
+                    {/* 悬浮菜单 (预览/移除) - 仅在非添加模式显示 */}
                     {!showAddButton && !isSelected && (
                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-between p-2 pointer-events-none will-change-[opacity]">
                             <div className="flex justify-between items-start pointer-events-auto">
                                 <div className="bg-black/50 p-1 rounded text-zinc-400 cursor-grab active:cursor-grabbing"><GripHorizontal size={14}/></div>
-                                {/* 只有传入 onRemove 时才显示移除按钮 */}
                                 {onRemove && (
                                     <button onClick={(e) => { e.stopPropagation(); onRemove(index); }} className="bg-red-900/80 p-1 rounded text-red-200 hover:bg-red-600 transition-colors" title="移除图片"><X size={14}/></button>
                                 )}
@@ -313,6 +393,7 @@
             );
         });
 
+        // ⬇️ 复制下面的完整代码，替换你现在的 CustomTitleBar 组件
         const CustomTitleBar = ({ appState, onClose }) => {
             const [isPinned, setIsPinned] = useState(false);
             const [mouseNearTop, setMouseNearTop] = useState(false);
@@ -321,15 +402,25 @@
             useEffect(() => {
                 let timer = null;
                 const handleMouseMove = (e) => {
-                    if (e.clientY < 60) {
+                    // 1. e.clientY < 100: 感应范围扩大到 100
+                    // 2. e.buttons === 1: 只要按住左键（拖拽中），绝对不隐藏
+                    if (e.clientY < 100 || e.buttons === 1) {
                         setMouseNearTop(true);
                         if (timer) { clearTimeout(timer); timer = null; }
                     } else {
-                        if (!timer) { timer = setTimeout(() => { setMouseNearTop(false); timer = null; }, 300); }
+                        // 3. 只有松开鼠标且离开顶部，才延迟 2秒 隐藏
+                        if (!timer) { timer = setTimeout(() => { setMouseNearTop(false); timer = null; }, 2000); }
                     }
                 };
+                
                 window.addEventListener('mousemove', handleMouseMove);
-                return () => { window.removeEventListener('mousemove', handleMouseMove); if (timer) clearTimeout(timer); };
+                window.addEventListener('mouseup', handleMouseMove); // 防止拖出窗口外松开导致状态卡死
+
+                return () => { 
+                    window.removeEventListener('mousemove', handleMouseMove); 
+                    window.removeEventListener('mouseup', handleMouseMove);
+                    if (timer) clearTimeout(timer); 
+                };
             }, []);
 
             const togglePin = () => { const newState = !isPinned; setIsPinned(newState); if (window.electronAPI) window.electronAPI.setAlwaysOnTop(newState); };
@@ -427,6 +518,17 @@
             const [selectorPage, setSelectorPage] = useState(1);
             const [viewMode, setViewMode] = useState('grid');
             const [currentPath, setCurrentPath] = useState(""); 
+            // ✅ 新增：控制阶段素材选择器的状态
+            // 结构: { stageIdx: 0, mode: 'folder' | 'file' } 或 null
+            const [stageSelectionState, setStageSelectionState] = useState(null);
+            // ✅ 新增：全局消息提示状态
+            const [toast, setToast] = useState(null); 
+
+            // ✅ 新增：显示提示的辅助函数
+            const showToast = (message) => {
+                setToast({ message, id: Date.now() });
+                setTimeout(() => setToast(null), 2000); // 2秒后自动消失
+            };
 
             // 2. 文件夹逻辑 (智能重建版 + 封面)
             const { currentFolders, currentImages } = useMemo(() => {
@@ -1259,8 +1361,138 @@
                 e.target.value = ''; // ✅ 新增这一行
             };
             const onMainDrop = (e) => { e.preventDefault(); const files = e.dataTransfer.items ? Array.from(e.dataTransfer.items).filter(i=>i.kind==='file').map(i=>i.getAsFile()) : Array.from(e.dataTransfer.files); const imgs = filterImageFiles(files); if(imgs.length>0) addFilesToGlobal(imgs, "Dropped Files"); };
-            const handleStageFolderSelect = (e, idx) => { const files = filterImageFiles(e.target.files); if(files.length===0)return; const stages = [...classStages]; const current = [...(stages[idx].stageFiles||[])]; files.forEach(f=>{if(!current.some(ex=>ex.name===f.name && ex.size===f.size)) current.push(f);}); stages[idx].stageFiles = current; stages[idx].folderName = stages[idx].folderName ? "Mixed Sources" : getFolderName(e.target.files); setClassStages(stages); };
-            const handleStageFileSelect = (e, idx) => { const files = filterImageFiles(e.target.files); if(files.length===0)return; const stages = [...classStages]; const current = [...(stages[idx].stageFiles||[])]; files.forEach(f=>{if(!current.some(ex=>ex.name===f.name && ex.size===f.size)) current.push(f);}); stages[idx].stageFiles = current; stages[idx].folderName = stages[idx].folderName ? "Mixed Sources" : "Selected Files"; setClassStages(stages); };
+
+            const handleStageFolderSelect = (e, idx) => { 
+                const rawFiles = filterImageFiles(e.target.files); 
+                if(rawFiles.length === 0) return; 
+                
+                const folderName = getFolderName(e.target.files);
+
+                // --- 1. 智能预处理：优先复用全局库中的“老”对象 ---
+                // 这样做的目的是：如果图在库里已存在且已有缩略图，直接拿来用，不用重新生成
+                const filesToUse = rawFiles.map(rawFile => {
+                    const existing = globalFiles.find(g => g.name === rawFile.name && g.size === rawFile.size);
+                    if (existing) {
+                        return existing; // ✅ 发现重复：直接复用有缩略图的老对象
+                    } else {
+                        // 🆕 没发现重复：这是新图
+                        if (!rawFile.groupName) rawFile.groupName = folderName;
+                        return rawFile; 
+                    }
+                });
+
+                // --- 2. 同步更新全局库 (只加入真正的新图) ---
+                setGlobalFiles(prev => {
+                    const nextGlobal = [...prev];
+                    filesToUse.forEach(f => {
+                        // 双重保险：只有当全局库里没这张图时才 push
+                        if (!nextGlobal.some(ex => ex.name === f.name && ex.size === f.size)) {
+                            nextGlobal.push(f);
+                        }
+                    });
+                    return nextGlobal;
+                });
+
+                // --- 3. 更新当前阶段 (Stage) ---
+                const stages = [...classStages]; 
+                const current = [...(stages[idx].stageFiles||[])]; 
+                
+                filesToUse.forEach(f => {
+                    // 阶段内去重：防止你手滑在一个阶段里加两次同一张图
+                    if(!current.some(ex => ex.name === f.name && ex.size === f.size)) {
+                        current.push(f);
+                    }
+                }); 
+                
+                stages[idx].stageFiles = current; 
+                stages[idx].folderName = stages[idx].folderName ? "Mixed Sources" : folderName; 
+                setClassStages(stages); 
+                showToast(`已导入并添加 ${filesToUse.length} 张图片`);
+                // 重置输入框，允许重复选择操作
+                e.target.value = '';
+            };
+            
+            const handleStageFileSelect = (e, idx) => { 
+                const rawFiles = filterImageFiles(e.target.files); 
+                if(rawFiles.length === 0) return; 
+
+                // --- 1. 智能预处理：优先复用全局库中的“老”对象 ---
+                const filesToUse = rawFiles.map(rawFile => {
+                    const existing = globalFiles.find(g => g.name === rawFile.name && g.size === rawFile.size);
+                    if (existing) {
+                        return existing; // ✅ 复用老对象
+                    } else {
+                        if (!rawFile.groupName) rawFile.groupName = "Stage Selection";
+                        return rawFile; // 🆕 新对象
+                    }
+                });
+
+                // --- 2. 同步更新全局库 ---
+                setGlobalFiles(prev => {
+                    const nextGlobal = [...prev];
+                    filesToUse.forEach(f => {
+                        if (!nextGlobal.some(ex => ex.name === f.name && ex.size === f.size)) {
+                            nextGlobal.push(f);
+                        }
+                    });
+                    return nextGlobal;
+                });
+
+                // --- 3. 更新当前阶段 ---
+                const stages = [...classStages]; 
+                const current = [...(stages[idx].stageFiles||[])]; 
+                
+                filesToUse.forEach(f => {
+                    if(!current.some(ex => ex.name === f.name && ex.size === f.size)) {
+                        current.push(f);
+                    }
+                }); 
+                
+                stages[idx].stageFiles = current; 
+                stages[idx].folderName = stages[idx].folderName ? "Mixed Sources" : "Selected Files"; 
+                setClassStages(stages); 
+                
+
+                e.target.value = '';
+            };
+            const addExistingFilesToStage = (filesToAdd, stageIdx) => {
+                const stages = [...classStages];
+                const current = [...(stages[stageIdx].stageFiles || [])];
+                
+                let addedCount = 0;
+                filesToAdd.forEach(f => {
+                    if (!current.some(ex => ex.name === f.name && ex.size === f.size)) {
+                        current.push(f);
+                        addedCount++;
+                    }
+                });
+                
+                stages[stageIdx].stageFiles = current;
+                // 去除了设置 folderName 的逻辑，因为我们不再需要显示它了
+                setClassStages(stages);
+                
+                // ✅ 触发反馈
+                if (addedCount > 0) {
+                    showToast(`成功添加 ${addedCount} 张图片`);
+                } else {
+                    showToast(`图片已存在，未重复添加`);
+                }
+            };
+            // ✅ 新增：从指定阶段移除图片 (用于选择器中的取消操作)
+            const removeFileFromStage = (fileToRemove, stageIdx) => {
+                const stages = [...classStages];
+                const current = [...(stages[stageIdx].stageFiles || [])];
+                
+                // 过滤掉匹配的图片
+                const nextFiles = current.filter(f => !(f.name === fileToRemove.name && f.size === fileToRemove.size));
+                
+                if (current.length !== nextFiles.length) {
+                    stages[stageIdx].stageFiles = nextFiles;
+                    setClassStages(stages);
+                    // 可选：显示轻微反馈，或不显示
+                    // showToast("已移除"); 
+                }
+            };
             const removeGlobalFile = (index) => { setGlobalFiles(prev => prev.filter((_, i) => i !== index)); };
             const onDragStart = (e, index) => { e.dataTransfer.setData("text/plain", index); };
             const onDragOver = (e) => e.preventDefault();
@@ -1516,16 +1748,100 @@
                                                     <div className="flex flex-col gap-2"><label className="text-sm font-medium text-zinc-400">播放顺序</label><div className="grid grid-cols-2 gap-2 bg-zinc-950 p-1 rounded-xl border border-zinc-800">{['random', 'ordered'].map(mode => (<button key={mode} onClick={() => setSettings({...settings, playbackOrder: mode})} className={`py-2 rounded-lg text-xs font-medium flex items-center justify-center gap-2 transition-all ${settings.playbackOrder === mode ? 'bg-zinc-800 text-white shadow-sm border border-zinc-700' : 'text-zinc-500 hover:text-zinc-300'}`}>{mode === 'random' ? <Shuffle size={14}/> : <ListOrdered size={14}/>}{mode === 'random' ? '随机乱序' : '列表顺序'}</button>))}</div></div>
                                                     <div className="h-px bg-zinc-800/50 w-full" />
                                                     <div className="flex flex-col gap-4">
+                                                        {/* === 模块 1: 固定时间模式 (Fixed Mode) === */}
                                                         <div className={`transition-all duration-300 ${settings.isClassMode ? 'opacity-40' : 'opacity-100'}`}>
-                                                            <label className="flex items-center gap-3 cursor-pointer mb-3" onClick={() => setSettings({...settings, isClassMode: false})}><div className={`w-5 h-5 rounded-full border flex items-center justify-center ${!settings.isClassMode ? 'border-blue-500' : 'border-zinc-600'}`}>{!settings.isClassMode && <div className="w-2.5 h-2.5 bg-blue-500 rounded-full" />}</div><input type="radio" name="mode" className="hidden" checked={!settings.isClassMode} onChange={() => setSettings({...settings, isClassMode: false})} /><span className={`font-medium ${!settings.isClassMode ? 'text-white' : 'text-zinc-400'}`}>固定时间模式</span></label>
+                                                            <label className="flex items-center gap-3 cursor-pointer mb-3" onClick={() => setSettings({...settings, isClassMode: false})}>
+                                                                <div className={`w-5 h-5 rounded-full border flex items-center justify-center ${!settings.isClassMode ? 'border-blue-500' : 'border-zinc-600'}`}>
+                                                                    {!settings.isClassMode && <div className="w-2.5 h-2.5 bg-blue-500 rounded-full" />}
+                                                                </div>
+                                                                <input type="radio" name="mode" className="hidden" checked={!settings.isClassMode} onChange={() => setSettings({...settings, isClassMode: false})} />
+                                                                <span className={`font-medium ${!settings.isClassMode ? 'text-white' : 'text-zinc-400'}`}>固定时间模式</span>
+                                                            </label>
+                                                            
+                                                            {/* 固定模式的具体设置项 */}
                                                             <div className={`pl-8 space-y-4 ${settings.isClassMode ? 'pointer-events-none' : ''}`}>
-                                                                <div className="space-y-2"><div className="text-xs text-zinc-500">单张时长</div><div className="flex flex-wrap gap-2">{[30, 45, 60, 120, 300, 600].map(sec => (<button key={sec} onClick={() => setSettings({...settings, duration: sec})} className={`px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${settings.duration === sec ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:bg-zinc-700'}`}>{sec < 60 ? `${sec}s` : `${sec/60}m`}</button>))}<div className="flex items-center gap-1 ml-auto bg-zinc-950 border border-zinc-700 rounded px-2 py-0.5"><span className="text-[10px] text-zinc-500 mr-1">自定义</span><input type="number" step="any" key={`duration-${settings.duration}-${timeUnitMultiplier}`} defaultValue={settings.duration > 0 ? parseFloat((settings.duration / timeUnitMultiplier).toFixed(2)) : ''} onKeyDown={(e) => e.key === 'Enter' && e.target.blur()} onBlur={(e) => { let val = parseFloat(e.target.value); if (isNaN(val) || val <= 0) val = 0; if (val > 0) setSettings(prev => ({...prev, duration: val * timeUnitMultiplier})); else setSettings(prev => ({...prev, duration: 0})); }} className="w-12 bg-transparent py-1 text-xs text-center focus:outline-none text-zinc-200 border-b border-transparent focus:border-blue-500 transition-colors" /><div className="relative border-l border-zinc-800 ml-1 pl-1"><select value={timeUnitMultiplier} onChange={(e) => setTimeUnitMultiplier(Number(e.target.value))} className="bg-transparent text-[10px] text-zinc-500 appearance-none py-1 pr-3 pl-1 cursor-pointer focus:outline-none hover:text-zinc-300"><option value={1}>s</option><option value={60}>m</option><option value={3600}>h</option></select><ChevronDown size={8} className="absolute right-0 top-1.5 text-zinc-600 pointer-events-none" /></div></div></div></div>
-                                                                <div className="space-y-2"><div className="text-xs text-zinc-500 flex justify-between"><span>数量限制</span><span className="text-[10px] opacity-60">0 = 无限</span></div><div className="flex flex-wrap gap-2 items-center">{[10, 20, 30, 50, 0].map(num => (<button key={num} onClick={() => setSettings({...settings, count: num})} className={`px-2 py-1 rounded text-[10px] border transition-colors ${settings.count === num ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:border-zinc-600'}`}>{num === 0 ? '全部' : num}</button>))}<div className="flex items-center gap-1 ml-auto bg-zinc-950 border border-zinc-800 rounded px-2 py-0.5"><span className="text-[10px] text-zinc-500 mr-1">自定义</span><input type="number" min="0" max="999" placeholder="0" key={`count-${settings.count}`} defaultValue={settings.count === 0 ? '' : settings.count} onKeyDown={(e) => e.key === 'Enter' && e.target.blur()} onBlur={(e) => { let val = parseInt(e.target.value); if (isNaN(val) || val < 0) val = 0; setSettings(prev => ({...prev, count: val})); }} className="w-10 bg-transparent text-xs text-center outline-none text-zinc-300 border-b border-transparent focus:border-blue-500 transition-colors" /></div></div></div>
+                                                                <div className="space-y-2">
+                                                                    <div className="text-xs text-zinc-500">单张时长</div>
+                                                                    <div className="flex flex-wrap gap-2">
+                                                                        {[30, 45, 60, 120, 300, 600].map(sec => (
+                                                                            <button key={sec} onClick={() => setSettings({...settings, duration: sec})} className={`px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${settings.duration === sec ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:bg-zinc-700'}`}>
+                                                                                {sec < 60 ? `${sec}s` : `${sec/60}m`}
+                                                                            </button>
+                                                                        ))}
+                                                                        <div className="flex items-center gap-1 ml-auto bg-zinc-950 border border-zinc-700 rounded px-2 py-0.5">
+                                                                            <span className="text-[10px] text-zinc-500 mr-1">自定义</span>
+                                                                            <input type="number" step="any" key={`duration-${settings.duration}-${timeUnitMultiplier}`} defaultValue={settings.duration > 0 ? parseFloat((settings.duration / timeUnitMultiplier).toFixed(2)) : ''} onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); }} onBlur={(e) => { let val = parseFloat(e.target.value); if (isNaN(val) || val <= 0) val = 0; if (val > 0) setSettings(prev => ({...prev, duration: val * timeUnitMultiplier})); else setSettings(prev => ({...prev, duration: 0})); }} className="w-12 bg-transparent py-1 text-xs text-center focus:outline-none text-zinc-200 border-b border-transparent focus:border-blue-500 transition-colors" />
+                                                                            <div className="relative border-l border-zinc-800 ml-1 pl-1">
+                                                                                <select value={timeUnitMultiplier} onChange={(e) => setTimeUnitMultiplier(Number(e.target.value))} className="bg-transparent text-[10px] text-zinc-500 appearance-none py-1 pr-3 pl-1 cursor-pointer focus:outline-none hover:text-zinc-300">
+                                                                                    <option value={1}>s</option><option value={60}>m</option><option value={3600}>h</option>
+                                                                                </select>
+                                                                                <ChevronDown size={8} className="absolute right-0 top-1.5 text-zinc-600 pointer-events-none" />
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                                <div className="space-y-2">
+                                                                    <div className="text-xs text-zinc-500 flex justify-between"><span>数量限制</span><span className="text-[10px] opacity-60">0 = 无限</span></div>
+                                                                    <div className="flex flex-wrap gap-2 items-center">
+                                                                        {[10, 20, 30, 50, 0].map(num => (
+                                                                            <button key={num} onClick={() => setSettings({...settings, count: num})} className={`px-2 py-1 rounded text-[10px] border transition-colors ${settings.count === num ? 'bg-blue-600 border-blue-600 text-white' : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:border-zinc-600'}`}>{num === 0 ? '全部' : num}</button>
+                                                                        ))}
+                                                                        <div className="flex items-center gap-1 ml-auto bg-zinc-950 border border-zinc-800 rounded px-2 py-0.5">
+                                                                            <span className="text-[10px] text-zinc-500 mr-1">自定义</span>
+                                                                            <input type="number" min="0" max="999" placeholder="0" key={`count-${settings.count}`} defaultValue={settings.count === 0 ? '' : settings.count} onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); }} onBlur={(e) => { let val = parseInt(e.target.value); if (isNaN(val) || val < 0) val = 0; setSettings(prev => ({...prev, count: val})); }} className="w-10 bg-transparent text-xs text-center outline-none text-zinc-300 border-b border-transparent focus:border-blue-500 transition-colors" />
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
                                                             </div>
-                                                        </div>
+                                                        </div> 
+                                                        {/* --- 这里必须闭合，确保两个模式是兄弟关系 --- */}
+
+                                                        {/* === 模块 2: 课程模式 (Class Mode) === */}
                                                         <div className={`transition-all duration-300 ${!settings.isClassMode ? 'opacity-50' : 'opacity-100'}`}>
-                                                            <div className="flex justify-between items-center mb-3"><label className="flex items-center gap-3 cursor-pointer" onClick={() => setSettings({...settings, isClassMode: true})}><div className={`w-5 h-5 rounded-full border flex items-center justify-center ${settings.isClassMode ? 'border-blue-500' : 'border-zinc-600'}`}>{settings.isClassMode && <div className="w-2.5 h-2.5 bg-blue-500 rounded-full" />}</div><input type="radio" name="mode" className="hidden" checked={settings.isClassMode} onChange={() => setSettings({...settings, isClassMode: true})} /><span className={`font-medium ${settings.isClassMode ? 'text-white' : 'text-zinc-400'}`}>课程模式</span></label><button onClick={() => { setSettings({...settings, isClassMode: true}); setShowClassEditor(true); }} className={`px-3 py-1.5 rounded-full border text-xs font-medium flex items-center gap-1.5 transition-colors ${settings.isClassMode ? 'border-blue-500 text-blue-400 bg-blue-500/10' : 'border-zinc-700 text-zinc-500'}`}><Edit2 size={12} /> 编辑流程</button></div>
-                                                            {settings.isClassMode && (<div className="pl-8 space-y-3"><div className="flex gap-2 overflow-x-auto pb-2">{classStages.map((s, i) => (<div key={i} className="flex-shrink-0 bg-zinc-950 border border-zinc-800 rounded px-3 py-2 min-w-[100px]"><div className="text-[10px] text-zinc-500 uppercase font-bold">Stage {i+1}</div><div className="text-sm font-mono text-zinc-300">{s.duration < 60 ? s.duration+'s' : s.duration/60+'m'} <span className="text-zinc-600">x</span> {s.count}</div></div>))}</div><div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800/50 flex items-center gap-6"><label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-400 hover:text-zinc-200"><input type="checkbox" className="accent-blue-500" checked={settings.enableStageAlert} onChange={(e) => setSettings({...settings, enableStageAlert: e.target.checked})} /><span>阶段间歇提示</span></label>{settings.enableStageAlert && (<div className="flex items-center gap-3 border-l border-zinc-800 pl-6"><label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-400"><input type="checkbox" className="accent-blue-500" checked={settings.autoContinue} onChange={(e) => setSettings({...settings, autoContinue: e.target.checked})} /><span>自动继续</span></label>{settings.autoContinue && <div className="flex items-center gap-1"><input type="number" min="1" max="60" value={settings.breakDuration} onChange={(e) => setSettings({...settings, breakDuration: parseInt(e.target.value)||5})} className="w-10 bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 text-xs text-center outline-none" /><span className="text-[10px] text-zinc-600">秒</span></div>}</div>)}</div></div>)}
+                                                            <div className="flex justify-between items-center mb-3">
+                                                                <label className="flex items-center gap-3 cursor-pointer" onClick={() => setSettings({...settings, isClassMode: true})}>
+                                                                    <div className={`w-5 h-5 rounded-full border flex items-center justify-center ${settings.isClassMode ? 'border-blue-500' : 'border-zinc-600'}`}>
+                                                                        {settings.isClassMode && <div className="w-2.5 h-2.5 bg-blue-500 rounded-full" />}
+                                                                    </div>
+                                                                    <input type="radio" name="mode" className="hidden" checked={settings.isClassMode} onChange={() => setSettings({...settings, isClassMode: true})} />
+                                                                    <span className={`font-medium ${settings.isClassMode ? 'text-white' : 'text-zinc-400'}`}>课程模式</span>
+                                                                </label>
+                                                                <button onClick={() => { setSettings({...settings, isClassMode: true}); setShowClassEditor(true); }} className={`px-3 py-1.5 rounded-full border text-xs font-medium flex items-center gap-1.5 transition-colors ${settings.isClassMode ? 'border-blue-500 text-blue-400 bg-blue-500/10' : 'border-zinc-700 text-zinc-500'}`}>
+                                                                    <Edit2 size={12} /> 编辑流程
+                                                                </button>
+                                                            </div>
+                                                            {settings.isClassMode && (
+                                                                <div className="pl-8 space-y-3">
+                                                                    <div className="flex gap-2 overflow-x-auto pb-2">
+                                                                        {classStages.map((s, i) => (
+                                                                            <div key={i} className="flex-shrink-0 bg-zinc-950 border border-zinc-800 rounded px-3 py-2 min-w-[100px]">
+                                                                                <div className="text-[10px] text-zinc-500 uppercase font-bold">Stage {i+1}</div>
+                                                                                <div className="text-sm font-mono text-zinc-300">{s.duration < 60 ? s.duration+'s' : s.duration/60+'m'} <span className="text-zinc-600">x</span> {s.count}</div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                    <div className="bg-zinc-950/50 rounded-lg p-3 border border-zinc-800/50 flex items-center gap-6">
+                                                                        <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-400 hover:text-zinc-200">
+                                                                            <input type="checkbox" className="accent-blue-500" checked={settings.enableStageAlert} onChange={(e) => setSettings({...settings, enableStageAlert: e.target.checked})} />
+                                                                            <span>阶段间歇提示</span>
+                                                                        </label>
+                                                                        {settings.enableStageAlert && (
+                                                                            <div className="flex items-center gap-3 border-l border-zinc-800 pl-6">
+                                                                                <label className="flex items-center gap-2 cursor-pointer text-xs text-zinc-400">
+                                                                                    <input type="checkbox" className="accent-blue-500" checked={settings.autoContinue} onChange={(e) => setSettings({...settings, autoContinue: e.target.checked})} />
+                                                                                    <span>自动继续</span>
+                                                                                </label>
+                                                                                {settings.autoContinue && (
+                                                                                    <div className="flex items-center gap-1">
+                                                                                        <input type="number" min="1" max="60" value={settings.breakDuration} onChange={(e) => setSettings({...settings, breakDuration: parseInt(e.target.value)||5})} onKeyDown={(e) => e.stopPropagation()} className="w-10 bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 text-xs text-center outline-none" />
+                                                                                        <span className="text-[10px] text-zinc-600">秒</span>
+                                                                                    </div>
+                                                                                )}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     </div>
                                                 </div>
@@ -1550,7 +1866,7 @@
 
                         {/* 大图预览 */}
                         {previewFile && (
-                            <div className="fixed inset-0 z-[90] bg-black/95 flex items-center justify-center pt-14 overflow-hidden" onClick={() => setPreviewFile(null)} onWheel={handlePreviewWheel} onMouseUp={handlePreviewMouseUp} onMouseLeave={handlePreviewMouseUp} onMouseMove={handlePreviewMouseMove}>
+                            <div className="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center pt-14 overflow-hidden" onClick={() => setPreviewFile(null)} onWheel={handlePreviewWheel} onMouseUp={handlePreviewMouseUp} onMouseLeave={handlePreviewMouseUp} onMouseMove={handlePreviewMouseMove}>
                                 <img ref={previewImgRef} src={previewUrl} alt="preview" onMouseDown={handlePreviewMouseDown} onClick={(e) => e.stopPropagation()} className="max-w-none shadow-2xl origin-center will-change-transform" decoding="async" style={{ cursor: 'grab', maxWidth: '90vw', maxHeight: '85vh', willChange: 'transform', backfaceVisibility: 'hidden' }} />
                                 <button onClick={(e) => { e.stopPropagation(); setPreviewFile(null); }} className="absolute top-16 right-6 p-2 bg-zinc-800 rounded-full text-white hover:bg-zinc-700 hover:scale-110 transition-transform z-[100]" title="关闭预览"><X size={24}/></button>
                                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-3 py-1 bg-black/60 text-zinc-300 text-xs rounded-full pointer-events-none">{Math.round(previewScale * 100)}%</div>
@@ -1566,8 +1882,12 @@
                                         <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 mb-6">
                                             <h4 className="text-sm font-bold text-white mb-3 flex items-center gap-2"><SaveAll size={16}/> 保存当前状态为新预设</h4>
                                             <div className="flex gap-3 mb-3">
-                                                <input ref={presetNameInputRef} type="text" placeholder="输入预设名称" value={editingPresetName} onChange={(e) => setEditingPresetName(e.target.value)} className="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:border-purple-500 outline-none text-white select-text" />
-                                                <button onClick={saveNewPreset} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-bold">保存</button>
+                                                <input ref={presetNameInputRef} 
+                                                type="text"
+                                                placeholder="输入预设名称" value={editingPresetName} 
+                                                onChange={(e) => setEditingPresetName(e.target.value)} 
+                                                onKeyDown={(e) => e.stopPropagation()}
+                                                className="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:border-purple-500 outline-none text-white select-text" /><button onClick={saveNewPreset} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-bold">保存</button>
                                             </div>
                                             <div className="flex items-center gap-6 text-xs bg-zinc-950/50 p-3 rounded-lg border border-zinc-800/50"><span className="text-zinc-500 font-bold">已画/未画记录:</span><label className="flex items-center gap-2 cursor-pointer text-zinc-300 hover:text-white transition-colors"><input type="radio" name="historyType" className="accent-purple-500" checked={!useLocalHistoryForNew} onChange={() => setUseLocalHistoryForNew(false)} /><div className="flex items-center gap-1"><Globe size={12}/> 沿用全局总记录</div></label><label className="flex items-center gap-2 cursor-pointer text-zinc-300 hover:text-white transition-colors"><input type="radio" name="historyType" className="accent-purple-500" checked={useLocalHistoryForNew} onChange={() => setUseLocalHistoryForNew(true)} /><div className="flex items-center gap-1"><Lock size={12}/> 单独一份记录</div></label></div>
                                         </div>
@@ -1581,24 +1901,25 @@
                             </div>
                         )}
 
-                        {/* 7. 练习历史记录管理窗口 (智能路径恢复版) */}
-            {showHistoryManager && (() => {
-                // ✅ 辅助函数：专门修复 File 对象展开后丢失 path 的问题
-                const cloneFile = (f) => {
-                    // 如果是原生 File 对象，必须手动复制属性
-                    if (f instanceof File) {
-                        return {
-                            name: f.name,
-                            path: f.path, // ✅ 核心修复：确保保留 path，让预览能读取原图
-                            size: f.size,
-                            type: f.type,
-                            thumbUrl: f.thumbUrl, // 保留缩略图引用
-                            lastModified: f.lastModified
+                        
+                    {/* 7. 练习历史记录管理窗口 (智能路径恢复版) */}
+                    {showHistoryManager && (() => {
+                        // ✅ 辅助函数：专门修复 File 对象展开后丢失 path 的问题
+                        const cloneFile = (f) => {
+                            // 如果是原生 File 对象，必须手动复制属性
+                            if (f instanceof File) {
+                                return {
+                                    name: f.name,
+                                    path: f.path, // ✅ 核心修复：确保保留 path，让预览能读取原图
+                                    size: f.size,
+                                    type: f.type,
+                                    thumbUrl: f.thumbUrl, // 保留缩略图引用
+                                    lastModified: f.lastModified
+                                };
+                            }
+                            // 如果已经是普通对象（比如恢复的记录），直接复制
+                            return { ...f };
                         };
-                    }
-                    // 如果已经是普通对象（比如恢复的记录），直接复制
-                    return { ...f };
-                };
 
                 // 1. 构建列表
                 let historyList = [];
@@ -1786,7 +2107,6 @@
                                                 file={item.file}
                                                 thumbUrl={item.file.thumbUrl}
                                                 index={i}
-                                                // 保持原有的逻辑
                                                 isDrawn={drawnHistory.has(getFileId(item.file))}
                                                 onToggleDrawn={toggleDrawn}
                                                 
@@ -1911,17 +2231,18 @@
                                                                         <ThumbnailItem 
                                                                             key={getFileId(file)} 
                                                                             file={file} 
+                                                                            // ✅ 修复图片不显示：确保传入 thumbUrl
                                                                             thumbUrl={file.thumbUrl} 
                                                                             index={i} 
                                                                             showAddButton={true} 
+                                                                            // 这里是直接添加到队列，没有“取消”概念，所以只传 onAdd
                                                                             onAdd={addToSession} 
                                                                             onPreview={setPreviewFile}
-                                                                            // ✅ 新增：显示黑白已画状态
+                                                                            // ✅ 新增：显示已画状态
                                                                             isDrawn={drawnHistory.has(getFileId(file))}
-                                                                            // ✅ 新增：允许直接点击右下角标记
                                                                             onToggleDrawn={toggleDrawn}
                                                                         />
-                                                                    )); 
+                                                                    ));
                                                                 })()}
                                                             </div>
                                                         </>
@@ -1929,16 +2250,18 @@
                                                 {currentFolders.length === 0 && currentImages.length === 0 && <div className="text-center text-zinc-500 py-20">此文件夹为空</div>}
                                             </div>
                                         ) : (
-                                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">{(() => { const validFiles = globalFiles.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f))); const totalPages = Math.ceil(validFiles.length / ITEMS_PER_PAGE) || 1; const safePage = Math.min(Math.max(1, selectorPage), totalPages); if (safePage !== selectorPage) setSelectorPage(safePage); const start = (safePage - 1) * ITEMS_PER_PAGE; return validFiles.slice(start, start + ITEMS_PER_PAGE).map((file, i) => (
+                                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">{(() => { const validFiles = globalFiles.filter(f => !pendingSessionQueue.some(p => getFileId(p.file) === getFileId(f))); const totalPages = Math.ceil(validFiles.length / ITEMS_PER_PAGE) || 1; const safePage = Math.min(Math.max(1, selectorPage), totalPages); if (safePage !== selectorPage) setSelectorPage(safePage); const start = (safePage - 1) * ITEMS_PER_PAGE; 
+                                                return validFiles.slice(start, start + ITEMS_PER_PAGE).map((file, i) => (
                                                 <ThumbnailItem 
                                                     key={getFileId(file)} 
                                                     file={file} 
+                                                    // ✅ 修复图片不显示
                                                     thumbUrl={file.thumbUrl} 
                                                     index={i} 
                                                     showAddButton={true} 
                                                     onAdd={addToSession} 
                                                     onPreview={setPreviewFile} 
-                                                    // 👇 新增这就两行
+                                                    // ✅ 新增：显示已画状态
                                                     isDrawn={drawnHistory.has(getFileId(file))}
                                                     onToggleDrawn={toggleDrawn}
                                                 />
@@ -2020,7 +2343,6 @@
                                                             <ThumbnailItem 
                                                                 key={getFileId(file)}
                                                                 file={file}
-                                                                // ✅ 核心修复：只使用 thumbUrl。如果是大图，等待 Worker 生成；如果是小图，Worker 会瞬间生成。
                                                                 thumbUrl={file.thumbUrl}
                                                                 index={i} 
                                                                 isSelected={selectedIndices.has(globalIndex)} 
@@ -2050,27 +2372,28 @@
                                         if (safePage !== managerPage) setManagerPage(safePage); 
                                         const start = (safePage - 1) * ITEMS_PER_PAGE; 
                                         
-                                        return globalFiles.slice(start, start + ITEMS_PER_PAGE).map((file, i) => { 
+                                        return globalFiles.slice(start, start + ITEMS_PER_PAGE).map((file, i) => {
                                             const globalIndex = start + i; 
+
                                             return (
                                                 <ThumbnailItem 
                                                     key={getFileId(file)} 
                                                     file={file} 
-                                                    // ✅ 核心修复：只使用 thumbUrl，避免卡顿
-                                                    thumbUrl={file.thumbUrl}
+                                                    thumbUrl={file.thumbUrl} 
                                                     index={i} 
                                                     isSelected={selectedIndices.has(globalIndex)} 
                                                     onClick={(e) => handleSelect(e, globalIndex)} 
-                                                    isDrawn={drawnHistory.has(getFileId(file))} 
-                                                    onToggleDrawn={toggleDrawn} 
-                                                    onRemove={() => removeGlobalFile(globalIndex)} 
-                                                    onPreview={setPreviewFile} 
-                                                    onDragStart={onDragStart} 
-                                                    onDrop={(e, dropIdx) => onDropEnhanced(e, dropIdx, true)} 
-                                                    onDragOver={onDragOver} 
+                                                    isDrawn={drawnHistory.has(getFileId(file))}
+                                                    onToggleDrawn={toggleDrawn}
+                                                    onRemove={() => removeGlobalFile(globalIndex)}
+                                                    onPreview={setPreviewFile}
+                                                    onDragStart={onDragStart}
+                                                    onDrop={(e, dropIdx) => onDropEnhanced(e, dropIdx, true)}
+                                                    onDragOver={onDragOver}
+                                                    showAddButton={false}
                                                 />
-                                            ); 
-                                        }); 
+                                            );
+                                        });
                                     })()}
                                 </div>
                             )}
@@ -2125,11 +2448,371 @@
                 </div>
             )}
 
-                        {/* 9. 阶段图片管理 (优化排版 + 修复缩略图) */}
-                        {managingStageIndex !== null && (
+            {/* 课程编排编辑器模态框 */}
+            {showClassEditor && (
+                <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-4xl shadow-2xl flex flex-col max-h-[90vh]">
+                        
+                        {/* --- 1. 标题栏 --- */}
+                        <div className="p-5 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
+                            <h3 className="font-bold text-xl flex items-center gap-2 text-blue-400">
+                                <Edit2 size={20} /> 课程编排
+                            </h3>
+                            <button onClick={() => setShowClassEditor(false)} className="text-zinc-400 hover:text-white transition-colors">
+                                <X size={24} />
+                            </button>
+                        </div>
+
+                        {/* --- 2. 内容区域 (滚动) --- */}
+                        <div className="p-6 overflow-y-auto flex-1 space-y-4 bg-zinc-950/30">
+                            {classStages.map((stage, idx) => (
+                                <div key={idx} className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 flex flex-col gap-4 shadow-sm hover:border-zinc-700 transition-colors">
+                                    
+                                    {/* 阶段标题与删除按钮 */}
+                                    <div className="flex items-center justify-between border-b border-zinc-800/50 pb-2">
+                                        <span className="text-blue-400 font-bold text-sm tracking-wide">
+                                            PHASE {idx + 1}
+                                        </span>
+                                        <button 
+                                            onClick={() => removeStage(idx)} 
+                                            disabled={classStages.length <= 1} 
+                                            className="text-zinc-600 hover:text-red-400 transition-colors disabled:opacity-30 disabled:hover:text-zinc-600"
+                                            title="删除此阶段"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
+
+                                    {/* 设置网格 */}
+                                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                        
+                                        {/* 左侧：时间与数量设置 */}
+                                        <div className="flex gap-4 lg:col-span-2">
+                                            {/* 时长设置 */}
+                                            <div className="flex-1">
+                                                <label className="text-[11px] uppercase text-zinc-500 font-bold mb-1.5 block">Duration</label>
+                                                <div className="relative">
+                                                    <input 
+                                                        type="number" 
+                                                        min="1" 
+                                                        value={stage.duration} 
+                                                        onChange={(e) => updateStage(idx, 'duration', e.target.value)} 
+                                                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm focus:border-blue-500 outline-none transition-all text-zinc-200" 
+                                                    />
+                                                    <span className="absolute right-3 top-2 text-xs text-zinc-600 pointer-events-none">
+                                                        {stage.duration < 60 ? 'sec' : 'min'}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            
+                                            {/* 数量设置 */}
+                                            <div className="flex-1">
+                                                <label className="text-[11px] uppercase text-zinc-500 font-bold mb-1.5 block">Count</label>
+                                                <input 
+                                                    type="number" 
+                                                    min="1" 
+                                                    value={stage.count} 
+                                                    onChange={(e) => updateStage(idx, 'count', e.target.value)} 
+                                                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm focus:border-blue-500 outline-none transition-all text-zinc-200" 
+                                                />
+                                            </div>
+                                        </div>
+
+                                        {/* 右侧：特定素材源 (Optional) */}
+                                        <div>
+                                            <label className="text-[11px] uppercase text-zinc-500 font-bold mb-1.5 block">Source (Optional)</label>
+                                            <div className="flex flex-col gap-2">
+                                                
+                                                {/* 1. 已选素材显示 (简化版：只显示数量) */}
+                                                {stage.stageFiles && stage.stageFiles.length > 0 && (
+                                                    <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded-lg p-2 animate-in fade-in">
+                                                        <div className="p-1.5 bg-blue-900/30 text-blue-400 rounded-md">
+                                                            <ImageIcon size={16}/>
+                                                        </div>
+                                                        <div className="flex-1 min-w-0 flex items-center gap-2">
+                                                            <span className="text-sm font-bold text-zinc-200">
+                                                                {stage.stageFiles.length}
+                                                            </span>
+                                                            <span className="text-xs text-zinc-500">images selected</span>
+                                                        </div>
+                                                        <div className="flex gap-1">
+                                                            <button onClick={() => setManagingStageIndex(idx)} className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white rounded transition-colors" title="管理/预览">
+                                                                <LayoutGrid size={14}/>
+                                                            </button>
+                                                            <button onClick={() => clearStageFiles(idx)} className="p-1.5 bg-zinc-800 hover:bg-red-900/30 text-zinc-400 hover:text-red-400 rounded transition-colors" title="清空">
+                                                                <X size={14}/>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {/* 2. 添加按钮 (合并为一个) */}
+                                                <button 
+                                                    onClick={() => {
+                                                        setStageSelectionState({ stageIdx: idx, mode: 'folder' }); // 默认进文件夹模式
+                                                        setViewMode('folder'); 
+                                                        setCurrentPath("");
+                                                        setSelectorPage(1);
+                                                    }}
+                                                    className="w-full flex items-center justify-center gap-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200 text-xs py-2.5 rounded-lg cursor-pointer transition-all active:scale-[0.98]"
+                                                    title="添加图片"
+                                                >
+                                                    <Plus size={14} /> 添加图片 / 文件夹
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+
+                            {/* 添加新阶段按钮 */}
+                            <button 
+                                onClick={addStage} 
+                                className="w-full py-3 border-2 border-dashed border-zinc-800 text-zinc-500 rounded-xl hover:border-blue-500 hover:text-blue-400 hover:bg-zinc-900/50 transition-all flex items-center justify-center gap-2 font-medium"
+                            >
+                                <Plus size={18} /> 添加新阶段
+                            </button>
+                        </div>
+
+                        {/* --- 3. 底部栏 --- */}
+                        <div className="p-5 border-t border-zinc-800 bg-zinc-900 rounded-b-xl flex justify-between items-center">
+                            <div className="text-sm text-zinc-500">
+                                总时长: <span className="text-zinc-300 font-mono">~{getTotalClassTime()}</span> 分钟
+                            </div>
+                            <button 
+                                onClick={() => setShowClassEditor(false)} 
+                                className="px-8 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold flex items-center gap-2 shadow-lg shadow-blue-900/20 active:scale-95 transition-all"
+                            >
+                                <Save size={18} /> 保存设置
+                            </button>
+                        </div>
+
+                    </div>
+                </div>
+            )}
+
+            {/* ✅ 新增：阶段素材选择器 (整合了 库选择 + 导入新文件) */}
+            {stageSelectionState !== null && (
+                <div className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-6xl shadow-2xl flex flex-col h-[85vh]">
+                        
+                        {/* 1. 顶部栏：包含导入按钮 */}
+                        <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
+                            <div className="flex items-center gap-4">
+                                <h3 className="font-bold text-lg flex items-center gap-2">
+                                    {/* 标题根据当前视图模式动态显示，但功能互通 */}
+                                    {viewMode === 'folder' ? <FolderOpen size={20} className="text-blue-400"/> : <FileImage size={20} className="text-blue-400"/>}
+                                    {viewMode === 'folder' ? "选择文件夹" : "选择图片"}
+                                    <span className="text-xs text-zinc-500 font-normal ml-2">添加到 阶段 {stageSelectionState.stageIdx + 1}</span>
+                                </h3>
+                                
+                                {/* ✅ 修改：将原来的单个动态按钮拆分为两个固定按钮 */}
+                                <div className="flex items-center gap-2 ml-4 border-l border-zinc-700 pl-4">
+                                    {/* 按钮 1: 导入文件夹 */}
+                                    <label className="cursor-pointer px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-700 text-xs font-bold rounded-lg flex items-center gap-2 transition-colors" title="导入本地文件夹到库并添加到当前阶段">
+                                        <UploadCloud size={14}/>
+                                        导入新文件夹
+                                        <input 
+                                            type="file" 
+                                            multiple 
+                                            webkitdirectory=""
+                                            directory=""
+                                            className="hidden" 
+                                            onChange={(e) => handleStageFolderSelect(e, stageSelectionState.stageIdx)} 
+                                        />
+                                    </label>
+
+                                    {/* 按钮 2: 导入图片 */}
+                                    <label className="cursor-pointer px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg flex items-center gap-2 transition-colors shadow-lg shadow-blue-900/20" title="导入本地图片到库并添加到当前阶段">
+                                        <FileImage size={14}/>
+                                        导入新图片
+                                        <input 
+                                            type="file" 
+                                            multiple 
+                                            className="hidden" 
+                                            onChange={(e) => handleStageFileSelect(e, stageSelectionState.stageIdx)} 
+                                        />
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                                {/* 视图切换 (保持不变) */}
+                                <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+                                    <button onClick={() => { setViewMode('grid'); setCurrentPath(""); setSelectorPage(1); }} className={`px-3 py-1 text-xs rounded-md flex items-center gap-2 transition-all ${viewMode === 'grid' ? 'bg-zinc-800 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}><LayoutGrid size={14}/> 全部</button>
+                                    <button onClick={() => { setViewMode('folder'); setCurrentPath(""); setSelectorPage(1); }} className={`px-3 py-1 text-xs rounded-md flex items-center gap-2 transition-all ${viewMode === 'folder' ? 'bg-zinc-800 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}><Folder size={14}/> 文件夹</button>
+                                </div>
+                                <button onClick={() => setStageSelectionState(null)}><X size={24} className="text-zinc-400 hover:text-white"/></button>
+                            </div>
+                        </div>
+
+                        {/* 2. 内容区：展示全局库 */}
+                        <div className="p-6 flex-1 overflow-y-auto bg-zinc-950/50">
+                            {viewMode === 'folder' ? (
+                                <div className="space-y-6">
+                                    {/* 面包屑 */}
+                                    <div className="flex items-center gap-2 text-sm text-zinc-400 mb-4">
+                                        <button onClick={() => setCurrentPath("")} className={`hover:text-white ${!currentPath ? 'text-white font-bold' : ''}`}>根目录</button>
+                                        {currentPath.split('/').filter(Boolean).map((part, index, arr) => {
+                                            const stepPath = arr.slice(0, index + 1).join('/') + '/';
+                                            return (<React.Fragment key={stepPath}><ChevronRight size={14}/><button onClick={() => setCurrentPath(stepPath)} className={`hover:text-white ${index === arr.length - 1 ? 'text-white font-bold' : ''}`}>{part}</button></React.Fragment>);
+                                        })}
+                                    </div>
+
+                                    {/* 文件夹列表 */}
+                                    {currentFolders.length > 0 && (
+                                        <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-4 mb-8">
+                                            {currentFolders.map((folder) => (
+                                                <div key={folder.name} className="relative group">
+                                                    <FolderCard 
+                                                        name={folder.name} 
+                                                        count={folder.count} 
+                                                        coverFile={folder.coverFile} 
+                                                        onClick={() => { setCurrentPath(folder.fullPath); setSelectorPage(1); }} 
+                                                    />
+                                                    
+                                                    {/* ✅ 使用新组件：处理点击反馈 */}
+                                                    <FolderActionOverlay 
+                                                        folder={folder}
+                                                        onOpen={() => {
+                                                            setCurrentPath(folder.fullPath);
+                                                            setSelectorPage(1);
+                                                        }}
+                                                        onAdd={(e) => {
+                                                            // 这里的逻辑保持不变，只是被新组件调用了
+                                                            const targetPath = folder.fullPath;
+                                                            const filesInFolder = globalFiles.filter(f => {
+                                                                let relativePath = f.webkitRelativePath;
+                                                                if (!relativePath && f.path) {
+                                                                    try {
+                                                                        const fullPath = f.path.replace(/\\/g, '/');
+                                                                        const group = f.groupName || "未分类";
+                                                                        const groupIndex = fullPath.lastIndexOf('/' + group + '/');
+                                                                        if (groupIndex !== -1) { relativePath = fullPath.slice(groupIndex + 1); } 
+                                                                        else {
+                                                                            const parentDir = fullPath.split('/').slice(-2, -1)[0];
+                                                                            if (parentDir && parentDir !== group) { relativePath = group + "/" + parentDir + "/" + f.name; } 
+                                                                            else { relativePath = group + "/" + f.name; }
+                                                                        }
+                                                                    } catch (e) { relativePath = (f.groupName || "未分类") + "/" + f.name; }
+                                                                } else if (!relativePath) {
+                                                                    relativePath = (f.groupName || "未分类") + "/" + f.name;
+                                                                }
+                                                                return relativePath && relativePath.startsWith(targetPath);
+                                                            });
+
+                                                            if (filesInFolder.length > 0) {
+                                                                addExistingFilesToStage(filesInFolder, stageSelectionState.stageIdx);
+                                                            }
+                                                        }}
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {/* 图片列表 (当前文件夹下的) */}
+                                    {currentImages.length > 0 && (
+                                        <>
+                                            <div className="flex justify-between items-center mb-2">
+                                                <div className="text-xs font-bold text-zinc-500 uppercase">Images ({currentImages.length})</div>
+                                                {/* 当前文件夹全选按钮 */}
+                                                <button 
+                                                    onClick={() => addExistingFilesToStage(currentImages, stageSelectionState.stageIdx)}
+                                                    className="text-xs text-blue-400 hover:text-white flex items-center gap-1"
+                                                >
+                                                    <Plus size={12}/> 添加当前页所有图片
+                                                </button>
+                                            </div>
+                                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                                                {(() => {
+                                                    const start = (selectorPage - 1) * ITEMS_PER_PAGE;
+                                                    // 获取当前阶段已有的文件列表，用于比对
+                                                    const currentStageFiles = classStages[stageSelectionState.stageIdx].stageFiles || [];
+                                                    
+                                                    return currentImages.slice(start, start + ITEMS_PER_PAGE).map((file, i) => {
+                                                        const isAdded = currentStageFiles.some(sf => sf.name === file.name && sf.size === file.size);
+                                                        
+                                                        return (
+                                                            <ThumbnailItem
+                                                                key={getFileId(file)}
+                                                                file={file}
+                                                                thumbUrl={file.thumbUrl} 
+                                                                index={i}
+                                                                showAddButton={true}
+                                                                isAdded={isAdded}
+                                                                onAdd={(f) => addExistingFilesToStage([f], stageSelectionState.stageIdx)}
+                                                                onRemoveFromStage={(f) => removeFileFromStage(f, stageSelectionState.stageIdx)}
+                                                                onPreview={setPreviewFile}
+                                                                isDrawn={drawnHistory.has(getFileId(file))}
+                                                                onToggleDrawn={toggleDrawn}
+                                                            />
+                                                        );
+                                                    });
+                                                })()}
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                            ) : (
+                                /* 全部图片网格模式 */
+                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
+                                    {(() => {
+                                        const start = (selectorPage - 1) * ITEMS_PER_PAGE;
+                                        const currentStageFiles = classStages[stageSelectionState.stageIdx].stageFiles || [];
+
+                                        return globalFiles.slice(start, start + ITEMS_PER_PAGE).map((file, i) => {
+                                            const isAdded = currentStageFiles.some(sf => sf.name === file.name && sf.size === file.size);
+
+                                            return (
+                                                <ThumbnailItem
+                                                    key={getFileId(file)}
+                                                    file={file}
+                                                    thumbUrl={file.thumbUrl}
+                                                    index={i} 
+                                                    showAddButton={true} 
+                                                    isAdded={isAdded}
+                                                    onAdd={(f) => addExistingFilesToStage([f], stageSelectionState.stageIdx)}
+                                                    onPreview={setPreviewFile}
+                                                    isDrawn={drawnHistory.has(getFileId(file))}
+                                                    onToggleDrawn={toggleDrawn}
+                                                />
+                                            );
+                                        });
+                                    })()}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* 3. 底部栏 */}
+                        <div className="p-4 border-t border-zinc-800 bg-zinc-900 rounded-b-xl grid grid-cols-3 items-center">
+                            <div></div>
+                            {/* 分页器 */}
+                            <div className="flex justify-center items-center gap-4 text-sm">
+                                {(() => { 
+                                    const count = viewMode === 'grid' ? globalFiles.length : currentImages.length; 
+                                    const totalPages = Math.ceil(count / ITEMS_PER_PAGE) || 1; 
+                                    if (count <= ITEMS_PER_PAGE) return <span className="text-zinc-500 text-xs">共 {totalPages} 页</span>; 
+                                    return (
+                                        <>
+                                            <button disabled={selectorPage === 1} onClick={()=>setSelectorPage(p=>p-1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronLeft size={18}/></button>
+                                            <span className="text-zinc-300 font-mono font-bold min-w-[60px] text-center">{selectorPage} <span className="text-zinc-600 font-normal">/</span> {totalPages}</span>
+                                            <button disabled={selectorPage >= totalPages} onClick={()=>setSelectorPage(p=>p+1)} className="p-1.5 rounded-lg bg-zinc-800 disabled:opacity-30 hover:bg-zinc-700 transition-colors border border-zinc-700"><ChevronRight size={18}/></button>
+                                        </>
+                                    ); 
+                                })()}
+                            </div>
+                            <div className="flex justify-end">
+                                <button onClick={() => setStageSelectionState(null)} className="px-6 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white font-medium shadow-lg shadow-green-900/20">完成</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+                       {managingStageIndex !== null && (
                             <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
                                 <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-5xl shadow-2xl flex flex-col h-[85vh]">
-                                    
                                     {/* Header */}
                                     <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900 rounded-t-xl">
                                         <div className="flex items-center gap-3">
@@ -2158,21 +2841,31 @@
                                             </div>
                                         ) : (
                                             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
-                                                {classStages[managingStageIndex].stageFiles.map((file, i) => (
-                                                    <ThumbnailItem 
-                                                        key={getFileId(file)} 
-                                                        file={file} 
-                                                        thumbUrl={file.thumbUrl} /* ✅ 关键修复：传入 thumbUrl */
-                                                        index={i} 
-                                                        isDrawn={drawnHistory.has(getFileId(file))} 
-                                                        onToggleDrawn={toggleDrawn} 
-                                                        onRemove={(idx) => removeStageFile(managingStageIndex, idx)} 
-                                                        onPreview={setPreviewFile} 
-                                                        onDragStart={onDragStart} 
-                                                        onDrop={(e, dropIdx) => onDrop(e, dropIdx, false, managingStageIndex)} 
-                                                        onDragOver={onDragOver} 
-                                                    />
-                                                ))}
+                                                {classStages[managingStageIndex].stageFiles.map((file, i) => {
+                                                    let displayUrl = file.thumbUrl;
+                                                    if (!displayUrl) {
+                                                        if (file.path) {
+                                                            displayUrl = `refflow://${file.path.replace(/\\/g, '/')}`;
+                                                        } else if (file instanceof File) {
+                                                            displayUrl = URL.createObjectURL(file);
+                                                        }
+                                                    }
+                                                    return (
+                                                        <ThumbnailItem 
+                                                            key={getFileId(file) + i} 
+                                                            file={file} 
+                                                            thumbUrl={displayUrl}
+                                                            index={i} 
+                                                            isDrawn={drawnHistory.has(getFileId(file))} 
+                                                            onToggleDrawn={toggleDrawn} 
+                                                            onRemove={(idx) => removeStageFile(managingStageIndex, idx)} 
+                                                            onPreview={setPreviewFile} 
+                                                            onDragStart={onDragStart} 
+                                                            onDrop={(e, dropIdx) => onDrop(e, dropIdx, false, managingStageIndex)} 
+                                                            onDragOver={onDragOver} 
+                                                        />
+                                                    );
+                                                })}
                                             </div>
                                         )}
                                     </div>
@@ -2194,6 +2887,8 @@
                                 </div>
                             </div>
                         )}
+
+                        {/* Unsaved Modal */}
                         {showUnsavedModal && (
                             <div className="fixed inset-0 z-[100000] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => e.stopPropagation()}>
                                 <div className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-sm w-full p-6 shadow-2xl shadow-red-900/10">
@@ -2206,43 +2901,40 @@
                                         <br/>在切换或退出前，需要保存吗？
                                     </p>
                                     <div className="space-y-3">
-                                        <button 
-                                            onClick={saveCurrentPreset} 
-                                            className={`w-full py-3 text-white rounded-lg font-bold text-sm shadow-lg transition-all ${currentPresetId ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20' : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'}`}
-                                        >
+                                        <button onClick={saveCurrentPreset} className={`w-full py-3 text-white rounded-lg font-bold text-sm shadow-lg transition-all ${currentPresetId ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20' : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'}`}>
                                             {currentPresetId ? "保存并继续" : "无法覆盖默认配置 (点击查看)"}
                                         </button>
-
                                         <button onClick={() => { 
-                                            if (pendingAction) { 
-                                                executeAction(pendingAction.type, pendingAction.payload); 
-                                            } else { 
-                                                if (window.electronAPI && window.electronAPI.forceClose) {
-                                                    window.electronAPI.forceClose();
-                                                } else {
-                                                    window.close();
-                                                }
-                                            } 
-                                            setPendingAction(null); 
-                                            setShowUnsavedModal(false); 
+                                            if (pendingAction) { executeAction(pendingAction.type, pendingAction.payload); } 
+                                            else { if (window.electronAPI && window.electronAPI.forceClose) { window.electronAPI.forceClose(); } else { window.close(); } } 
+                                            setPendingAction(null); setShowUnsavedModal(false); 
                                         }} className="w-full py-3 bg-zinc-800 hover:bg-red-900/20 hover:text-red-400 text-zinc-300 rounded-lg font-medium text-sm border border-zinc-700 transition-all">
                                             不保存 (丢弃修改)
                                         </button>
-
-                                        <button onClick={() => { 
-                                            setPendingAction(null); 
-                                            setShowUnsavedModal(false); 
-                                        }} className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
+                                        <button onClick={() => { setPendingAction(null); setShowUnsavedModal(false); }} className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
                                             取消
                                         </button>
                                     </div>
                                 </div>
                             </div>
                         )}
+
+                        {/* Toast Notification */}
+                        {toast && (
+                            <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[99999] animate-in slide-in-from-bottom-5 fade-in duration-300 pointer-events-none">
+                                <div className="bg-white/90 text-black px-6 py-3 rounded-full shadow-[0_0_30px_rgba(255,255,255,0.2)] font-medium text-sm flex items-center gap-2 backdrop-blur-md">
+                                    <CheckCircle size={18} className="text-green-600" fill="currentColor" color="white"/>
+                                    {toast.message}
+                                </div>
+                            </div>
+                        )}
+
+                    {/* ✅ 修复重点：这里是 Setup 状态的结束闭合，必须存在！ */}
                     </div>
                 );
             }
             
+            // --- Finished State ---
             if (appState === 'finished') {
                 return (
                     <div className="min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center p-4 overflow-y-auto">
@@ -2362,8 +3054,8 @@
                         </div>
                    )}
 
-                   {/* ✅ 修复：未保存提示框 (层级调至最高 z-[100000]，防止被预设管理器遮挡) */}
-                   {showUnsavedModal && (
+                  {/* ✅ 修复：未保存提示框 (层级调至最高 z-[100000]) */}
+                    {showUnsavedModal && (
                         <div className="fixed inset-0 z-[100000] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={(e) => e.stopPropagation()}>
                             <div className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-sm w-full p-6 shadow-2xl shadow-red-900/10">
                                 <div className="flex items-center gap-3 mb-4 text-amber-500">
@@ -2375,7 +3067,6 @@
                                     <br/>在切换或退出前，需要保存吗？
                                 </p>
                                 <div className="space-y-3">
-                                    {/* 保存按钮：如果是默认配置，显示灰色或提示用户 */}
                                     <button 
                                         onClick={saveCurrentPreset} 
                                         className={`w-full py-3 text-white rounded-lg font-bold text-sm shadow-lg transition-all ${currentPresetId ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20' : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'}`}
@@ -2383,17 +3074,14 @@
                                         {currentPresetId ? "保存并继续" : "无法覆盖默认配置 (点击查看)"}
                                     </button>
 
-                                    {/* 不保存按钮：【修复 2】增加 window.close() 作为回退方案 */}
                                     <button onClick={() => { 
-                                        // 丢弃修改：直接执行之前挂起的操作
                                         if (pendingAction) { 
                                             executeAction(pendingAction.type, pendingAction.payload); 
                                         } else { 
-                                            // 尝试 Electron 关闭，如果失败则尝试浏览器关闭
                                             if (window.electronAPI && window.electronAPI.forceClose) {
                                                 window.electronAPI.forceClose();
                                             } else {
-                                                window.close(); // 浏览器回退
+                                                window.close();
                                             }
                                         } 
                                         setPendingAction(null); 
@@ -2403,13 +3091,22 @@
                                     </button>
 
                                     <button onClick={() => { 
-                                        // 取消：什么都不做，留在这个页面
                                         setPendingAction(null); 
                                         setShowUnsavedModal(false); 
                                     }} className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
                                         取消
                                     </button>
                                 </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ✅ 全局反馈提示 (Toast) */}
+                    {toast && (
+                        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[99999] animate-in slide-in-from-bottom-5 fade-in duration-300 pointer-events-none">
+                            <div className="bg-white/90 text-black px-6 py-3 rounded-full shadow-[0_0_30px_rgba(255,255,255,0.2)] font-medium text-sm flex items-center gap-2 backdrop-blur-md">
+                                <CheckCircle size={18} className="text-green-600" fill="currentColor" color="white"/>
+                                {toast.message}
                             </div>
                         </div>
                     )}
